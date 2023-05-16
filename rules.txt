@@ -1,0 +1,31 @@
+VEHICLE;IDLE;v.presence and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == 1 and v.y > -3  and v.y < 3 and ego.vx + (ego.vx**2)/10 > v.x - 6 + ((ego.vx+v.vx)**2)/10
+VEHICLE;FASTER;v.presence and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == 1 and v.y > -3 and v.y < 3 and ego.vx+5 + ((ego.vx+5)**2)/10 > v.x - 6 + ((ego.vx+v.vx)**2)/10
+VEHICLE;SLOWER;v.presence and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == 1 and v.y > -3  and v.y < 3 and ego.vx-5 + ((ego.vx-5)**2)/10 > v.x - 6 + ((ego.vx+v.vx)**2)/10
+VEHICLE;IDLE;v.presence and copysign(1,ego.cos_h) == -1 and copysign(1,v.cos_h) == -1 and v.y > -3  and v.y < 3 and ego.vx - (ego.vx**2)/10 < v.x + 6 - ((ego.vx+v.vx)**2)/10
+VEHICLE;FASTER;v.presence and copysign(1,ego.cos_h) == -1 and copysign(1,v.cos_h) == -1 and v.y > -3  and v.y < 3 and ego.vx-5 - ((ego.vx-5)**2)/10 < v.x + 6 - ((ego.vx+v.vx)**2)/10
+VEHICLE;SLOWER;v.presence and copysign(1,ego.cos_h) == -1 and copysign(1,v.cos_h) == -1 and v.y > -3  and v.y < 3 and ego.vx+5 - ((ego.vx+5)**2)/10 < v.x + 6 - ((ego.vx+v.vx)**2)/10
+OBJECT;FASTER;o.presence and abs(o.y) < 3 and ego.vx + 5 + ((ego.vx+5)**2)/10 > o.x - 6
+OBJECT;IDLE;o.presence and abs(o.y) < 3 and ego.vx + ((ego.vx)**2)/10 > o.x - 6
+VEHICLE;LANE_RIGHT;not parsed.is_right
+VEHICLE;LANE_LEFT;not parsed.is_left
+VEHICLE;LANE_LEFT;v.presence and v.y > -6  and v.y < -3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == 1 and v.x > 0 and ego.vx + (ego.vx**2)/10 > v.x - 6 + ((ego.vx+v.vx)**2)/10
+VEHICLE;LANE_LEFT; v.presence and v.y < 6  and v.y > 3 and copysign(1,ego.cos_h) == -1 and copysign(1,v.cos_h) == -1 and v.x < 0 and ego.vx - (ego.vx**2)/10 < v.x + 6 - ((ego.vx+v.vx)**2)/10
+VEHICLE;LANE_RIGHT; v.presence and v.y < 6  and v.y > 3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == 1 and v.x > 0 and ego.vx + (ego.vx**2)/10 > v.x - 6 + ((ego.vx+v.vx)**2)/10
+VEHICLE;LANE_RIGHT; v.presence and v.y > -6  and v.y < -3 and copysign(1,ego.cos_h) == -1 and copysign(1,v.cos_h) == -1 and v.x < 0 and ego.vx - (ego.vx**2)/10 < v.x + 6 - ((ego.vx+v.vx)**2)/10
+VEHICLE;LANE_LEFT;v.presence and v.y > -6  and v.y < -3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == 1 and v.x < 0 and ego.vx+v.vx + ((ego.vx+v.vx)**2)/10 > -v.x - 6 + ego.vx + ((ego.vx)**2)/10
+VEHICLE;LANE_RIGHT;v.presence and v.y < 6  and v.y > 3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == 1 and v.x < 0 and ego.vx+v.vx + ((ego.vx+v.vx)**2)/10 > -v.x - 6 + ego.vx + ((ego.vx)**2)/10
+VEHICLE;LANE_LEFT;v.presence and v.y > -6  and v.y < -3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == 1 and abs(v.x) < 10 and (v.vx + ego.vx) > 1 and ego.vx > 1
+VEHICLE;LANE_LEFT;v.presence and v.y < 6  and v.y > 3 and copysign(1,ego.cos_h) == -1 and copysign(1,v.cos_h) == -1 and abs(v.x) < 10 and (v.vx + ego.vx) < -1 and ego.vx < -1
+VEHICLE;LANE_RIGHT;v.presence and v.y < 6  and v.y > 3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == 1 and abs(v.x) < 10 and (v.vx + ego.vx) > 1 and ego.vx > 1
+VEHICLE;LANE_RIGHT;v.presence and v.y > -6  and v.y < -3 and copysign(1,ego.cos_h) == -1 and copysign(1,v.cos_h) == -1 and abs(v.x) < 10 and (v.vx + ego.vx) < -1 and ego.vx < -1
+VEHICLE;LANE_LEFT;v.presence and v.y > -6  and v.y < -3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == -1 and abs(v.x) < 10 and (v.vx + ego.vx) < -1 and ego.vx > 1
+VEHICLE;LANE_LEFT;v.presence and v.y < 6  and v.y > 3 and copysign(1,ego.cos_h) == -1 and copysign(1,v.cos_h) == 1 and abs(v.x) < 10 and (v.vx + ego.vx) > 1  and ego.vx < -1
+VEHICLE;LANE_RIGHT;v.presence and v.y < 6  and v.y > 3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == -1 and abs(v.x) < 10 and (v.vx + ego.vx) < -1 and ego.vx > 1
+VEHICLE;LANE_RIGHT;v.presence and v.y > -6  and v.y < -3 and copysign(1,ego.cos_h) == -1 and copysign(1,v.cos_h) == 1 and abs(v.x) < 10 and (v.vx + ego.vx) > 1  and ego.vx < -1
+VEHICLE;IDLE;v.presence and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == -1 and v.y > -3 and v.y < 3 and v.x > 0 and ego.vx + (ego.vx**2)/10 > v.x - 6 - (ego.vx+v.vx+5)-(ego.vx+v.vx+5)**2/10
+VEHICLE;FASTER;v.presence and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == -1 and v.y > -3 and v.y < 3 and v.x > 0 and ego.vx+5 + ((ego.vx+5)**2)/10 > v.x - 6 - (ego.vx+v.vx+5)-(ego.vx+v.vx+5)**2/10
+VEHICLE;SLOWER;v.presence and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == -1 and v.y > -3 and v.y < 3 and v.x > 0 and ego.vx-5 + ((ego.vx-5)**2)/10 > v.x - 6 - (ego.vx+v.vx+5)-(ego.vx+v.vx+5)**2/10
+VEHICLE;LANE_LEFT;v.presence and v.y > -6  and v.y < -3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == -1 and v.x > 0 and ego.vx + (ego.vx**2)/10 > v.x - 6  - (ego.vx+v.vx+5)-(ego.vx+v.vx+5)**2/10
+VEHICLE;RIGHT_LEFT;v.presence and v.y < 6  and v.y > 3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == -1 and v.x > 0 and ego.vx + (ego.vx**2)/10 > v.x - 6  - (ego.vx+v.vx+5)-(ego.vx+v.vx+5)**2/10
+VEHICLE;LANE_LEFT;v.presence and v.y > -6  and v.y < -3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == -1 and v.x > 0 and ego.vx + (ego.vx**2)/10 > v.x - 6 - (ego.vx+v.vx+5)-(ego.vx+v.vx+5)**2/10
+VEHICLE;LANE_RIGHT;v.presence and v.y < 6  and v.y > 3 and copysign(1,ego.cos_h) == 1 and copysign(1,v.cos_h) == -1 and v.x > 0 and ego.vx + (ego.vx**2)/10 > v.x - 6 - (ego.vx+v.vx+5)-(ego.vx+v.vx+5)**2/10

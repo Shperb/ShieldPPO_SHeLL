@@ -1,4 +1,3 @@
-
 import numpy as np
 import random
 import torch
@@ -6,7 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import MultivariateNormal
 from torch.distributions import Categorical
+from torch.nn.utils.rnn import pad_sequence
 
+# each input for 'point in time' is state-action pair, so each sequence len is k_last_states length and each batch_size is 1.
+# we have batch_size = 1 which is a disavantages.
 
 
 ################################## set device ##################################
@@ -14,7 +16,7 @@ from torch.distributions import Categorical
 # set device to cpu or cuda
 device = torch.device('cpu')
 
-if(torch.cuda.is_available()):
+if (torch.cuda.is_available()):
     device = torch.device('cuda:0')
     torch.cuda.empty_cache()
     print("Device set to : " + str(torch.cuda.get_device_name(device)))
@@ -34,7 +36,6 @@ class RolloutBuffer:
         self.is_terminals = []
         self.costs = []
 
-
     def clear(self):
         del self.actions[:]
         del self.states[:]
@@ -42,11 +43,6 @@ class RolloutBuffer:
         del self.rewards[:]
         del self.is_terminals[:]
         del self.costs[:]
-
-
-import torch
-import torch.nn as nn
-from torch.distributions import MultivariateNormal, Categorical
 
 
 
@@ -61,13 +57,13 @@ class ActorCritic(nn.Module):
             self.action_dim = action_dim
             self.action_var = torch.full(
                 (action_dim,), action_std_init * action_std_init).to(device)
+        self.lstm = nn.LSTM(state_dim, 64, batch_first=True)
 
         # actor
-        ## INPUT FOR THE ACTOR NETWORK - State dim is -> state_dim * k_last_states
-        ## the actor network goal is to set the policy - map from states to actions (learns actions that maximize reward)
+        # for a given states returns the safety score per each action
         if has_continuous_action_space:
             self.actor = nn.Sequential(
-                nn.Linear(state_dim, 64),
+                nn.Linear(64, 64),
                 nn.Tanh(),
                 nn.Linear(64, 64),
                 nn.Tanh(),
@@ -75,7 +71,7 @@ class ActorCritic(nn.Module):
             )
         else:
             self.actor = nn.Sequential(
-                nn.Linear(state_dim, 64),
+                nn.Linear(64, 64),
                 nn.Tanh(),
                 nn.Linear(64, 64),
                 nn.Tanh(),
@@ -84,9 +80,9 @@ class ActorCritic(nn.Module):
             )
 
         # critic
-        ## critic - learns the expected reward (value) - how good the state is
+        # for a given state - "how good it is"
         self.critic = nn.Sequential(
-            nn.Linear(state_dim, 64),
+            nn.Linear(64, 64),
             nn.Tanh(),
             nn.Linear(64, 64),
             nn.Tanh(),
@@ -102,11 +98,23 @@ class ActorCritic(nn.Module):
             print("WARNING : Calling ActorCritic::set_action_std() on discrete action space policy")
             print("--------------------------------------------------------------------------------------------")
 
-    def forward(self):
-        raise NotImplementedError
+    def actor_forward(self, states):
+       # adding unsqueeze(0) for batch_size = 1
+        lstm_output, _ = self.lstm(states)
+        # last time steps's as oiutput - representation of the sequence
+        lstm_output_last = lstm_output[:, -1, :]
+        # Pass the LSTM output through the actor network
+        actor_output = self.actor(lstm_output_last)
+        return actor_output.squeeze(0) # dim [action_dim,] safety score per action
+
+    def critic_forward(self, states):
+        lstm_output, _ = self.lstm(states)
+        lstm_output_last = lstm_output[:, -1, :]
+        critic_output = self.critic(lstm_output_last)
+        return critic_output.squeeze(0)
+
 
     def act(self, state):
-
         if self.has_continuous_action_space:
             action_mean = self.actor(state)
             cov_mat = torch.diag(self.action_var).unsqueeze(dim=0)
@@ -120,31 +128,30 @@ class ActorCritic(nn.Module):
 
         return action.detach(), action_logprob.detach()
 
-    def evaluate(self, state, action):
-
+    def evaluate(self, states, action):
         if self.has_continuous_action_space:
-            action_mean = self.actor(state)
+            action_mean = self.actor_forward(states)
 
             action_var = self.action_var.expand_as(action_mean)
             cov_mat = torch.diag_embed(action_var).to(device)
             dist = MultivariateNormal(action_mean, cov_mat)
-
             # For Single Action Environments.
             if self.action_dim == 1:
                 action = action.reshape(-1, self.action_dim)
 
         else:
-            action_probs = self.actor(state)
+            if self.k_last_states == 1:
+                action_probs = self.actor_forward(states)
             dist = Categorical(action_probs)
         action_logprobs = dist.log_prob(action)
         dist_entropy = dist.entropy()
-        state_values = self.critic(state)
-
+        state_values = self.critic_forward(states)
         return action_logprobs, state_values, dist_entropy
 
 
 class PPO:
-    def __init__(self, state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space, action_std_init=0.6, k_last_states=1):
+    def __init__(self, state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+                 has_continuous_action_space, action_std_init=0.6, k_last_states=1):
 
         self.has_continuous_action_space = has_continuous_action_space
 
@@ -158,13 +165,15 @@ class PPO:
 
         self.buffer = RolloutBuffer()
 
-        self.policy = ActorCritic(state_dim, action_dim, has_continuous_action_space, action_std_init, k_last_states).to(device)
+        self.policy = ActorCritic(state_dim, action_dim, has_continuous_action_space, action_std_init,
+                                  k_last_states).to(device)
         self.optimizer = torch.optim.Adam([
-                        {'params': self.policy.actor.parameters(), 'lr': lr_actor},
-                        {'params': self.policy.critic.parameters(), 'lr': lr_critic}
-                    ])
+            {'params': self.policy.actor.parameters(), 'lr': lr_actor},
+            {'params': self.policy.critic.parameters(), 'lr': lr_critic}
+        ])
 
-        self.policy_old = ActorCritic(state_dim, action_dim, has_continuous_action_space, action_std_init, k_last_states).to(device)
+        self.policy_old = ActorCritic(state_dim, action_dim, has_continuous_action_space, action_std_init,
+                                      k_last_states).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
 
         self.MseLoss = nn.MSELoss()
@@ -247,7 +256,6 @@ class PPO:
             return action.item()
 
     def update(self):
-
         # Monte Carlo estimate of returns
         rewards = []
         discounted_reward = 0
@@ -260,24 +268,13 @@ class PPO:
         # Normalizing the rewards
         rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
-        # Reshape rewards tensor with padding
-        # Pad the rewards tensor with zeros to match k_last_states
-        # Calculate the required padding size
-        padding_value = 1.0
-        # Reshape the rewards tensor
-        # Number of rows in the desired 2D tensor
-        num_rows = rewards.shape[0]
-
-        # Reshape the rewards tensor into a 2D tensor with shape [80, 5]
-        rewards = rewards.unsqueeze(1).expand(num_rows, self.k_last_states)
-
-        old_states = torch.squeeze(torch.stack(self.buffer.states, dim=0)).detach().to(device)
+        # TODO - good for padding - check this. THE SQUEEZE REMOVES ZEROS
+        old_states = torch.squeeze(torch.stack(self.buffer.states, dim=0), 0).detach().to(device)
         old_actions = torch.squeeze(torch.stack(self.buffer.actions, dim=0)).detach().to(device)
         old_logprobs = torch.squeeze(torch.stack(self.buffer.logprobs, dim=0)).detach().to(device)
 
         # Optimize policy for K epochs
         for _ in range(self.K_epochs):
-
             # Evaluating old actions and values
             logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
 
@@ -288,18 +285,17 @@ class PPO:
             ratios = torch.exp(logprobs - old_logprobs.detach())
 
             # Finding Surrogate Loss
-
             advantages = rewards - state_values.detach()
-
             surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1-self.eps_clip, 1+self.eps_clip) * advantages
+            surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
 
             # final loss of clipped objective PPO
-            loss = -torch.min(surr1, surr2) + 0.5*self.MseLoss(state_values, rewards) - 0.01*dist_entropy
-
+            loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rewards) - 0.01 * dist_entropy
             # take gradient step
             self.optimizer.zero_grad()
             loss.mean().backward()
+            print("loss from update", loss.mean())
+
             self.optimizer.step()
 
         # Copy new weights into old policy
@@ -315,14 +311,15 @@ class PPO:
         self.policy_old.load_state_dict(torch.load(checkpoint_path, map_location=lambda storage, loc: storage))
         self.policy.load_state_dict(torch.load(checkpoint_path, map_location=lambda storage, loc: storage))
 
+
 class PPOCostAsReward(PPO):
 
     def update(self):
-
         # Monte Carlo estimate of returns
         rewards = []
         discounted_reward = 0
-        for reward, is_terminal, cost in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals), reversed(self.buffer.costs)):
+        for reward, is_terminal, cost in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals),
+                                             reversed(self.buffer.costs)):
             if is_terminal:
                 discounted_reward = 0
             if cost > 0:
@@ -376,31 +373,39 @@ class ShieldBuffer:
         self.pos_rb = []
         self.neg_rb = []
 
+    def move_last_pos_to_neg(self):
+        if len(self.pos_rb) > 1:
+            self.neg_rb.append(self.pos_rb[-1])
+            self.pos_rb = self.pos_rb[:-1]
+
     def __len__(self):
         return len(self.pos_rb) + len(self.neg_rb)
 
     def add(self, s, a, label):
-        if label > 0.5: # safe
-            self.pos_rb.append((s,a))
-        else:
-            self.neg_rb.append((s,a))
-
-# before changes
+        if label > 0.5:  # SAFE
+            self.pos_rb.append((s, a))
+        else: # COLLISION
+            self.neg_rb.append((s, a))
 
     def sample(self, n):
-        n_neg = min(n // 2, len(self.neg_rb))
-        n_pos = n - n_neg
+       # n_neg = min(n // 2, len(self.neg_rb))
+        n_neg = min(max(n // 2,n-len(self.pos_rb)), len(self.neg_rb))
+        # original - n_pos = n - n_neg
+        n_pos = min(n - n_neg, len(self.pos_rb))
         pos_batch = random.sample(self.pos_rb, n_pos)
-        s_pos, a_pos = map(np.stack, zip(*pos_batch))
+        #s_pos, a_pos = map(np.stack, zip(*pos_batch))
+        s_pos = np.array([item[0] for item in pos_batch])
+        a_pos = np.array([item[1] for item in pos_batch])
         neg_batch = random.sample(self.neg_rb, n_neg)
-        s_neg, a_neg = map(np.stack, zip(*neg_batch))
-        return torch.FloatTensor(s_pos).to(device), torch.LongTensor(a_pos).to(device),\
-            torch.FloatTensor(s_neg).to(device), torch.LongTensor(a_neg).to(device)
-
+        #s_neg, a_neg = map(np.stack, zip(*neg_batch))
+        s_neg = np.array([item[0] for item in neg_batch])
+        a_neg = np.array([item[1] for item in neg_batch])
+       # TODO - the following line raises an error when there is no padding..
+        return torch.FloatTensor(s_pos).to(device), torch.LongTensor(a_pos).to(device), \
+               torch.FloatTensor(s_neg).to(device), torch.LongTensor(a_neg).to(device)
 
 
 class Shield(nn.Module):
-
     def __init__(self, state_dim, action_dim, has_continuous_action_space, k_last_states):
         super().__init__()
 
@@ -409,16 +414,11 @@ class Shield(nn.Module):
         if not self.has_continuous_action_space:
             self.action_embedding = nn.Embedding(action_dim, action_dim)
             self.action_embedding.weight.data = torch.eye(action_dim)
-
-        self.net = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid())
+        self.lstm = nn.LSTM(state_dim , hidden_dim, num_layers=1, batch_first=True)
+        self.fc1 = nn.Linear(hidden_dim + action_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, 1)
+        self.action_dim = action_dim
         self.loss_fn = nn.BCELoss()
 
     def encode_action(self, a):
@@ -428,36 +428,43 @@ class Shield(nn.Module):
             return self.action_embedding(a)
 
     def forward(self, s, a):
+        # Convert input to the same dtype as LSTM parameters
+        #x = x.to(self.lstm.weight_hh_l0.dtype)
         a = self.encode_action(a)
-        x = torch.cat([s, a], -1)
-        return self.net(x)
+        lstm_output, _ = self.lstm(s)
+        # Selecting the last layer - hidden state which captures the relevant information from entire sequence (states)
+        lstm_output_last = lstm_output[:, -1, :]  # Shape: [1, hidden_dim]
+        x = torch.cat([lstm_output_last, a], -1)  # Shape: [action_dim, hidden_dim]
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        safety_scores = torch.sigmoid(self.fc3(x)).squeeze(-1) # Shape: [action_dim, 1]
+        # safety_scores - shaped [action_dim] each element represents the safety score for an action
+        return safety_scores.squeeze(-1)  # Shape: [action_dim]
+
 
     def loss(self, s_pos, a_pos, s_neg, a_neg):
-        # add extra dimension since s_pos is now [14, last_k_states, state_dim] -> it has an extra dimension.
-        a_pos = self.encode_action(a_pos)
-        a_neg = self.encode_action(a_neg)
-
-
-        x_pos = torch.cat([s_pos, a_pos], dim=-1)
-        x_neg = torch.cat([s_neg, a_neg],  dim=-1)
-        y_pos = self.net(x_pos)
-        y_neg = self.net(x_neg)
+        y_pos = self.forward(s_pos, a_pos)
+        y_neg = self.forward(s_neg, a_neg)
         loss = self.loss_fn(y_pos, torch.ones_like(y_pos)) + self.loss_fn(y_neg, torch.zeros_like(y_neg))
         return loss
 
-class ShieldPPO(PPO): # currently only discrete action
-    def __init__(self, state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space, action_std_init=0.6, masking_threshold = 0, k_last_states=1):
+class ShieldPPO(PPO):  # currently only discrete action
+    def __init__(self, state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+                 has_continuous_action_space, action_std_init=0.6, masking_threshold=0, k_last_states=1, safety_treshold = 0.5):
         super().__init__(state_dim, action_dim,
                          lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-                         has_continuous_action_space, action_std_init,  k_last_states=1)
+                         has_continuous_action_space, action_std_init, k_last_states=1)
         self.action_dim = action_dim
-        self.shield = Shield(state_dim, action_dim, has_continuous_action_space, k_last_states = k_last_states).to(device)
+        self.shield = Shield(state_dim, action_dim, has_continuous_action_space, k_last_states=k_last_states).to(device)
         self.shield_opt = torch.optim.Adam(self.shield.parameters(), lr=5e-4)
         self.shield_buffer = ShieldBuffer()
         self.masking_threshold = masking_threshold
         self.k_last_states = k_last_states
-        print("masking_threshold is: ", self.masking_threshold)
-        print("k_last_states is", self.k_last_states)
+        self.state_dim = state_dim
+        self.safety_treshold = safety_treshold
+
+    def move_last_pos_to_neg(self):
+        self.shield_buffer.move_last_pos_to_neg()
 
     def add_to_shield(self, s, a, label):
         self.shield_buffer.add(s, a, label)
@@ -471,85 +478,98 @@ class ShieldPPO(PPO): # currently only discrete action
         # k steps to update the shield network - each epoch (step) is one forward and backward pass
         for i in range(self.K_epochs):
             # in each iteration - it samples batch_size positive and negative samples
+            # now it samples list of states
             s_pos, a_pos, s_neg, a_neg = self.shield_buffer.sample(batch_size)
             self.shield_opt.zero_grad()
             # compute loss - binary cross entropy
             loss = self.shield.loss(s_pos, a_pos, s_neg, a_neg)
-            #back propogation
+            # back propogation
             loss.backward()
             # updating the shield parameters using Adam optimizer
             self.shield_opt.step()
             loss_ += loss.item()
-        return loss_/self.K_epochs
+        return loss_ / self.K_epochs
 
     def select_action(self, states, valid_actions, timestep):
-        ## The function gets a list of states - not just the last one
-        print("len of states is", len(states))
-        valid_mask = torch.zeros(self.k_last_states, self.action_dim).to(device)
+        valid_mask = torch.zeros(self.action_dim).to(device)
+        no_safe_action = False
+
         for a in valid_actions:
-            valid_mask[:, a] = 1.0
-
-        # Pad the last_states list if its length is less than k_states
-        while len(states) < self.k_last_states:
-            # TODO (?) - What should be the dummy variable - 0?
-            dummy_state = np.zeros_like(states[0])  # Create a dummy state (all zeros)
-            states.insert(0, dummy_state)
-        # Print the shape of each state in the states list
+            valid_mask[a] = 1.0
         with torch.no_grad():
-            # Create one tensor of all states tensor
-            # TODO LATER - maybe add more sequences, parallel
             states_tensor = torch.FloatTensor(states).to(device)
-            action_probs = self.policy_old.actor(states_tensor)
+            last_state = states[-1]
+            state = torch.FloatTensor(last_state).to(device)
+            action_probs = self.policy_old.actor_forward(states_tensor.unsqueeze(0))
             # it will have self.k_last_states rows, each with the same action indices
-            actions = torch.arange(self.action_dim).repeat(self.k_last_states, 1).to(device)
-            # Repeating states for each action ( 5 actions)
-            state_ = states_tensor.unsqueeze(1).repeat(1, self.action_dim, 1)
-            # Pad action_probs tensor to match k_last_states
-            while action_probs.size(0) < self.k_last_states:
-                dummy_probs = torch.zeros_like(action_probs[0])
-                action_probs = torch.cat([dummy_probs.unsqueeze(0), action_probs], dim=0)
-            ## TODO - Try more tesholds / according to shield loss improvement
-            ## TODO -  do it with 10,000 ... 20,000...
-
+            # Prepare the actions tensor based on the number of states
+            actions = torch.arange(self.action_dim).to(device)  # (n_action,)
+            # the input for the shield is the state that returns 5 times
+            states_ = states_tensor.unsqueeze(0).repeat(self.action_dim, 1, 1)  # (n_action, state_dim)
             if timestep >= self.masking_threshold:
-                print("USING SAFETY MASKING")
-            #    print("state_.shape", state_.shape)
-                safety = self.shield(state_, actions)
-                mask = safety.gt(0.5).float()  # Shape: [k_last_states, n_actions]
-                mask = mask.squeeze(-1)  # Remove the extra singleton dimension
+             #   print("USING SAFETY MASKING")
+        ## BATCH_SIZE = 1 SEQEUENCE = 1, EACH SEQUENCE LENGTH IS - K_LAST_STATES
+                safety_scores = self.shield(states_, actions)
+                mask = safety_scores.gt(self.safety_treshold).float()
                 mask = valid_mask * mask
                 action_probs_ = action_probs.clone()
                 if mask.sum().item() > 0:
-                    #masking according to the shield + valid_mask
+                     # AT LEAST ONE ACTION IS CONSIDERED SAFE
                     action_probs_[mask == 0] = -1e10
                 else:
-                    # masking according to valid_mask only
-
+                    # No safe action according to shield (all zeros - below 0.5)
+                    print("No safe action according to shield")
+                    no_safe_action = True
+                    # TODO - NO SAFE ACTION ACCORDING TO SHIELD - MABYE THE STATE IS UNSAFE FROM THE BEGGINING
+                    # TODO -  WE SHOULD LET THE NETWORK KNOW THAT THIS STATE IS UNSAFE WITH THE ACTION THAT LED TO IT
                     action_probs_[valid_mask == 0] = -1e10
             else:
-                print("NOT USING SAFETY MASKING")
+                #   print("NOT USING SAFETY MASKING")
                 mask = valid_mask
                 action_probs_ = action_probs.clone()
                 if mask.sum().item() > 0:
+                    # at least one of the actions is safe according to shield or valid
                     action_probs_[mask == 0] = -1e10
                 else:
+                    print("NO VALID ACTIONS AT ALL - SHOULDN'T HAPPEN ")
                     action_probs_[valid_mask == 0] = -1e10
+            ## FOR ALL STATES (SEQUENCE)
             action_probs_ = F.softmax(action_probs_)
             dist = Categorical(action_probs_)
             dist2 = Categorical(action_probs)
-        # action is a vector (action per state)
-        # [3,5,3]
-        # TODO - ONE ACTION STORED IN THE BUFFER
+        # action - [k_last_states, action_dim] -
         action = dist.sample()
+        # action_logprob = action_probs_[-1, action].log()
         action_logprob = dist2.log_prob(action)
-        self.buffer.states.append(states_tensor)
+
+        # convert list to tensor
+        padding_rows = max(0, self.k_last_states - states_tensor.shape[0])
+        if padding_rows > 0:
+            # Create a tensor of zeros with the same shape as the states except for the first dimension
+            zeros = torch.zeros((padding_rows,) + states_tensor.shape[1:])
+            padded_states = torch.cat((zeros, states_tensor), dim=0)
+        else:
+            # If no padding is needed, keep the original tensor
+            padded_states = states_tensor
+        self.buffer.states.append(padded_states)
         self.buffer.actions.append(action)
         self.buffer.logprobs.append(action_logprob)
-        # if k_last_states is 2 so action is for example [4,1] - which predicts the next action for each one of the states. we want the last one.
-        # last_action = action[-1].item()
-        # returns the vector of action (the net action for all states and not just for the last one like the comment before)
-        return action
+        if timestep >= self.masking_threshold:
+            return action.item(), safety_scores, no_safe_action
+        else:
+            return action.item(), "no shield yet", "no shield yet"
 
+    def save(self, checkpoint_path_ac, checkpoint_path_shield):
+        # save actor critic networks
+        torch.save(self.policy_old.state_dict(), checkpoint_path_ac)
+        # save shield network
+        torch.save(self.shield.state_dict(), checkpoint_path_shield)
+
+
+    def load(self, checkpoint_path_ac, checkpoint_path_shield):
+        self.policy_old.load_state_dict(torch.load(checkpoint_path_ac, map_location=lambda storage, loc: storage))
+        self.policy.load_state_dict(torch.load(checkpoint_path_ac, map_location=lambda storage, loc: storage))
+        self.shield.load_state_dict(torch.load(checkpoint_path_shield, map_location=lambda storage, loc: storage))
 
 class RuleBasedShieldPPO(PPO):
     def __init__(self, state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
@@ -562,8 +582,8 @@ class RuleBasedShieldPPO(PPO):
 
     def add_to_shield(self, s, a, label):
         if not label:
-            #print(s,a)
-            #print('A mistake was detected')
+            # print(s,a)
+            # print('A mistake was detected')
             input("A mistake was detected, update rules and press Enter to continue...")
             self.safety_rules.parse_rules()
 
@@ -571,11 +591,14 @@ class RuleBasedShieldPPO(PPO):
         valid_mask = torch.zeros(self.action_dim).to(device)
         for a in valid_actions:
             valid_mask[a] = 1.0
+
         with torch.no_grad():
             original_state_representation = state
             state = torch.FloatTensor(state).to(device)
             action_probs = self.policy_old.actor(state)
-            mask = [(1 if self.safety_rules.check_state_action_if_safe(original_state_representation, action_as_int) else 0) for action_as_int in range(self.action_dim)]
+            mask = [
+                (1 if self.safety_rules.check_state_action_if_safe(original_state_representation, action_as_int) else 0)
+                for action_as_int in range(self.action_dim)]
             mask = torch.FloatTensor(mask).to(device)
             mask = valid_mask * mask
 
@@ -593,3 +616,4 @@ class RuleBasedShieldPPO(PPO):
         self.buffer.actions.append(action)
         self.buffer.logprobs.append(action_logprob)
         return action.item()
+

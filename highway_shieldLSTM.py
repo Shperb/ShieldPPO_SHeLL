@@ -249,7 +249,6 @@ def train(arguments=None):
         for env in multi_task_env.envs:
             env.metadata["video.frames_per_second"] = 30
             env.metadata["video.output_frames_per_second"] = 30
-    # state_dim = multi_task_env.observation_space.shape[0] + len(multi_task_env.envs)
     action_dim = multi_task_env.action_space_size()
     if args.no_render:
         print("Rendering is disabled")
@@ -323,13 +322,10 @@ def train(arguments=None):
             # select action with policy
             if args.render and not args.no_render:
                 multi_task_env.env.render()
-            # RELEVANT
-            #TODO -
             prev_prev_states = prev_states.copy()
             prev_states = last_states.copy()
             prev_states_vf = last_states_vf.copy()
             action, safety_scores, no_safe_action = ppo_agent.select_action(last_states, valid_actions, time_step)
-
         #    print("the selected action is", action)
             state, reward, done, info, state_vf = multi_task_env.step(action)
             last_states.append(state)
@@ -359,20 +355,21 @@ def train(arguments=None):
                 ppo_agent.update()
                 ("update succuess")
             # the update of the shield is more frequent
+            # MeetingComment: ASK SHAHAF: before masking_treshold - base on what it updates the shield?! on decisions made by critic&actor nets
             if time_step % update_shield_timestep == 0 and agent == "ShieldPPO":
                 shield_loss = ppo_agent.update_shield(1024)
                 shield_losses.append(shield_loss)
             # cost - the real label of the action
             if info["cost"] > 0:
-                print("Collision !!!:-(")
+                print("Collision !!!:(")
                 collision_info[time_step] = (i_episode, t, prev_states_vf, safety_scores, no_safe_action, action)
                 is_mistake = True
             if agent == "ShieldPPO" or agent == "RuleBasedShieldPPO":
-                # TODO - remove padding!
-
+                # PADDING
                 if len(prev_states) < k_last_states:
                     padding = [np.zeros_like(prev_states[0])] * (k_last_states - len(prev_states))
-                    padded_prev_states =  padding + prev_states
+                    # MeetingComment (!) change the padding to the end (instead of beggining)
+                    padded_prev_states = prev_states + padding
                 else:
                     padded_prev_states = prev_states
 
@@ -385,10 +382,11 @@ def train(arguments=None):
                             for item in reversed(trajectory):
                                 f.write(f"{item}\n")
                     last_added_to_buffer = 0
-                    ppo_agent.add_to_shield(padded_prev_states, action, 0)
+                    # MeetingComment (!) saved len(prev_states-1) becuase we need the index that's why i sent -1.
+                    ppo_agent.add_to_shield(padded_prev_states, len(prev_states) - 1, action, 0)
                 else:
                     last_added_to_buffer = 1
-                    ppo_agent.add_to_shield(padded_prev_states, action, 1)
+                    ppo_agent.add_to_shield(padded_prev_states,len(prev_states) -1, action, 1)
 
             # if continuous action space; then decay action std of ouput action distribution
             if has_continuous_action_space and time_step % action_std_decay_freq == 0:

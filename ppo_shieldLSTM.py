@@ -381,11 +381,11 @@ class ShieldBuffer:
     def __len__(self):
         return len(self.pos_rb) + len(self.neg_rb)
 
-    def add(self, s, a, label):
+    def add(self, s,last_informative_layer,  a, label):
         if label > 0.5:  # SAFE
-            self.pos_rb.append((s, a))
+            self.pos_rb.append((s,last_informative_layer, a))
         else: # COLLISION
-            self.neg_rb.append((s, a))
+            self.neg_rb.append((s,last_informative_layer,  a))
 
     def sample(self, n):
        # n_neg = min(n // 2, len(self.neg_rb))
@@ -395,20 +395,21 @@ class ShieldBuffer:
         pos_batch = random.sample(self.pos_rb, n_pos)
         #s_pos, a_pos = map(np.stack, zip(*pos_batch))
         s_pos = np.array([item[0] for item in pos_batch])
-        a_pos = np.array([item[1] for item in pos_batch])
+        last_informative_layers_pos = np.array([item[1] for item in pos_batch])
+        a_pos = np.array([item[2] for item in pos_batch])
         neg_batch = random.sample(self.neg_rb, n_neg)
         #s_neg, a_neg = map(np.stack, zip(*neg_batch))
         s_neg = np.array([item[0] for item in neg_batch])
-        a_neg = np.array([item[1] for item in neg_batch])
+        last_informative_layers_neg = np.array([item[1] for item in neg_batch])
+        a_neg = np.array([item[2] for item in neg_batch])
        # TODO - the following line raises an error when there is no padding..
-        return torch.FloatTensor(s_pos).to(device), torch.LongTensor(a_pos).to(device), \
-               torch.FloatTensor(s_neg).to(device), torch.LongTensor(a_neg).to(device)
+        return torch.FloatTensor(s_pos).to(device), torch.FloatTensor(last_informative_layers_pos).to(device), torch.LongTensor(a_pos).to(device), \
+               torch.FloatTensor(s_neg).to(device), torch.FloatTensor(last_informative_layers_neg).to(device), torch.LongTensor(a_neg).to(device)
 
 
 class Shield(nn.Module):
     def __init__(self, state_dim, action_dim, has_continuous_action_space, k_last_states):
         super().__init__()
-
         hidden_dim = 256
         self.has_continuous_action_space = has_continuous_action_space
         if not self.has_continuous_action_space:
@@ -421,30 +422,34 @@ class Shield(nn.Module):
         self.action_dim = action_dim
         self.loss_fn = nn.BCELoss()
 
+    def forward(self, s, last_informative_layers, a):
+        """
+        s - last k_states (or less) for each sample in the batch
+        last_informative_layers - index of the last informative layer - for each sample in the batch
+        a - tensor of actions - for each sample in the batch
+        """
+        a = self.encode_action(a)
+        lstm_output, _ = self.lstm(s)
+        # PREVIOUS - Selecting the last layer - hidden state which captures the relevant information from entire sequence (states)
+        # lstm_output_last = lstm_output[:, -1, :]  # Shape: [1, hidden_dim]
+        # MeetingComment - (!) select the last informative layer
+        # MeetingComment - ASK SHAHAF: DOES IT RETURN THE SCORE FOR A SPECEIFIC ACTION? SEE THE DIFFERENT BETWEEN 'SELECT_ACTION' AND 'UPDATE-SHIELD'
+        lstm_output_last = torch.stack([t[int(last_informative_layers[i].item())] for i, t in enumerate(lstm_output)])
+        x = torch.cat([lstm_output_last, a], -1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        safety_scores = torch.sigmoid(self.fc3(x)).squeeze(-1)
+        return safety_scores.squeeze(-1)
+
     def encode_action(self, a):
         if self.has_continuous_action_space:
             return a
         else:
             return self.action_embedding(a)
 
-    def forward(self, s, a):
-        # Convert input to the same dtype as LSTM parameters
-        #x = x.to(self.lstm.weight_hh_l0.dtype)
-        a = self.encode_action(a)
-        lstm_output, _ = self.lstm(s)
-        # Selecting the last layer - hidden state which captures the relevant information from entire sequence (states)
-        lstm_output_last = lstm_output[:, -1, :]  # Shape: [1, hidden_dim]
-        x = torch.cat([lstm_output_last, a], -1)  # Shape: [action_dim, hidden_dim]
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        safety_scores = torch.sigmoid(self.fc3(x)).squeeze(-1) # Shape: [action_dim, 1]
-        # safety_scores - shaped [action_dim] each element represents the safety score for an action
-        return safety_scores.squeeze(-1)  # Shape: [action_dim]
-
-
-    def loss(self, s_pos, a_pos, s_neg, a_neg):
-        y_pos = self.forward(s_pos, a_pos)
-        y_neg = self.forward(s_neg, a_neg)
+    def loss(self, s_pos,last_informative_layers_pos, a_pos, s_neg,last_informative_layers_neg, a_neg):
+        y_pos = self.forward(s_pos, last_informative_layers_pos, a_pos)
+        y_neg = self.forward(s_neg, last_informative_layers_neg, a_neg)
         loss = self.loss_fn(y_pos, torch.ones_like(y_pos)) + self.loss_fn(y_neg, torch.zeros_like(y_neg))
         return loss
 
@@ -466,8 +471,9 @@ class ShieldPPO(PPO):  # currently only discrete action
     def move_last_pos_to_neg(self):
         self.shield_buffer.move_last_pos_to_neg()
 
-    def add_to_shield(self, s, a, label):
-        self.shield_buffer.add(s, a, label)
+    def add_to_shield(self, s, last_informative_layer, a, label):
+        #MeetingComment - (!) save the last_informative_layer with to the shield buffer also
+        self.shield_buffer.add(s, last_informative_layer, a, label)
 
     def update_shield(self, batch_size):
         if len(self.shield_buffer.neg_rb) == 0:
@@ -478,11 +484,11 @@ class ShieldPPO(PPO):  # currently only discrete action
         # k steps to update the shield network - each epoch (step) is one forward and backward pass
         for i in range(self.K_epochs):
             # in each iteration - it samples batch_size positive and negative samples
-            # now it samples list of states
-            s_pos, a_pos, s_neg, a_neg = self.shield_buffer.sample(batch_size)
+            #  samples list of k_last_states states. for each sample.
+            s_pos, last_informative_layers_pos, a_pos, s_neg, last_informative_layers_neg, a_neg = self.shield_buffer.sample(batch_size)
             self.shield_opt.zero_grad()
             # compute loss - binary cross entropy
-            loss = self.shield.loss(s_pos, a_pos, s_neg, a_neg)
+            loss = self.shield.loss(s_pos,last_informative_layers_pos,  a_pos, s_neg,last_informative_layers_neg, a_neg)
             # back propogation
             loss.backward()
             # updating the shield parameters using Adam optimizer
@@ -493,28 +499,32 @@ class ShieldPPO(PPO):  # currently only discrete action
     def select_action(self, states, valid_actions, timestep):
         valid_mask = torch.zeros(self.action_dim).to(device)
         no_safe_action = False
-
         for a in valid_actions:
             valid_mask[a] = 1.0
         with torch.no_grad():
             states_tensor = torch.FloatTensor(states).to(device)
+            # the last state is the states[-1] since there's no masking
             last_state = states[-1]
             state = torch.FloatTensor(last_state).to(device)
             action_probs = self.policy_old.actor_forward(states_tensor.unsqueeze(0))
             # it will have self.k_last_states rows, each with the same action indices
             # Prepare the actions tensor based on the number of states
             actions = torch.arange(self.action_dim).to(device)  # (n_action,)
-            # the input for the shield is the state that returns 5 times
-            states_ = states_tensor.unsqueeze(0).repeat(self.action_dim, 1, 1)  # (n_action, state_dim)
+            # prepare it for the safety_scores
+            actions_ = [tensor.unsqueeze(0) for tensor in actions]
+            # MeetingComment - (!) changed the shield input (states_) so it will not repeat itself action_dim times.
+            states_ = states_tensor.unsqueeze(0)  # (n_action, state_dim)
             if timestep >= self.masking_threshold:
-             #   print("USING SAFETY MASKING")
-        ## BATCH_SIZE = 1 SEQEUENCE = 1, EACH SEQUENCE LENGTH IS - K_LAST_STATES
-                safety_scores = self.shield(states_, actions)
-                mask = safety_scores.gt(self.safety_treshold).float()
+                #   print("USING SAFETY MASKING")
+                ## BATCH_SIZE = 1 SEQEUENCE = 1, EACH SEQUENCE LENGTH IS - K_LAST_STATES
+                # MeetingComment - (!) SENT LEN(STATES-1) TO SHIELD. BECAUSE THIS IS THE LAST LAYER - only one forward (not batch)
+                # MeetingComment - (!) - change safety_scores so now it summons self.shield() per each action SEPARATELY - what is better?
+                safety_scores = [self.shield(states_, torch.tensor([len(states)-1]), a) for a in actions_]
+                mask = torch.tensor(safety_scores).gt(self.safety_treshold).float()
                 mask = valid_mask * mask
                 action_probs_ = action_probs.clone()
                 if mask.sum().item() > 0:
-                     # AT LEAST ONE ACTION IS CONSIDERED SAFE
+                    # AT LEAST ONE ACTION IS CONSIDERED SAFE
                     action_probs_[mask == 0] = -1e10
                 else:
                     # No safe action according to shield (all zeros - below 0.5)

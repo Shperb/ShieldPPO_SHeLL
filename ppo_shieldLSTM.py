@@ -97,7 +97,7 @@ class ActorCritic(nn.Module):
             print("--------------------------------------------------------------------------------------------")
             print("WARNING : Calling ActorCritic::set_action_std() on discrete action space policy")
             print("--------------------------------------------------------------------------------------------")
-
+    # TODO - ADD LAST_INFORMATIVE_LAYER
     def actor_forward(self, states):
        # adding unsqueeze(0) for batch_size = 1
         lstm_output, _ = self.lstm(states)
@@ -106,6 +106,7 @@ class ActorCritic(nn.Module):
         # Pass the LSTM output through the actor network
         actor_output = self.actor(lstm_output_last)
         return actor_output.squeeze(0) # dim [action_dim,] safety score per action
+    # TODO - ADD LAST_INFORMATIVE_LAYER
 
     def critic_forward(self, states):
         lstm_output, _ = self.lstm(states)
@@ -424,6 +425,10 @@ class Shield(nn.Module):
 
     def forward(self, s, last_informative_layers, a):
         """
+        tensor(8,3,71)
+        tensor(8,)
+    tensor(8,)
+
         s - last k_states (or less) for each sample in the batch
         last_informative_layers - index of the last informative layer - for each sample in the batch
         a - tensor of actions - for each sample in the batch
@@ -520,7 +525,7 @@ class ShieldPPO(PPO):  # currently only discrete action
                 # MeetingComment - (!) SENT LEN(STATES-1) TO SHIELD. BECAUSE THIS IS THE LAST LAYER - only one forward (not batch)
                 # MeetingComment - (!) - change safety_scores so now it summons self.shield() per each action SEPARATELY - what is better?
                 safety_scores = [self.shield(states_, torch.tensor([len(states)-1]), a) for a in actions_]
-                mask = torch.tensor(safety_scores).gt(self.safety_treshold).float()
+                mask = torch.tensor(safety_scores).gt(self.safety_treshold).float().to(device)
                 mask = valid_mask * mask
                 action_probs_ = action_probs.clone()
                 if mask.sum().item() > 0:

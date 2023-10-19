@@ -229,6 +229,6 @@ def simulate(ac_path, shield_path , masking_threshold = 0, k_last_states = 1, ma
 
 
 if __name__ == '__main__':
-    simulate(ac_path ="models/PIAPUA_2609/model.pth", shield_path ="models/PIAPUA_2609/shield.pth", max_simulation_timesteps = 100)
+    simulate(ac_path ="models/safety_tresholds/tresh=0.1/model.pth", shield_path ="models/safety_tresholds/tresh=0.1/shield.pth", max_simulation_timesteps = 1000)
 
 

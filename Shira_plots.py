@@ -45,10 +45,12 @@ def create_plots(files, keys, base_path_save):
         df.to_csv(save_path_df, index=False)
         for file in files:
             cost_to_cost_rate(file)
+
         # Create a figure with 6 subplots (2 rows and 3 columns)
         fig, axs = plt.subplots(2, len(files), figsize=(30, 16))
         # Define colors for each experiment
         colors = ['r', 'b', 'g', 'purple', 'orange', 'cyan']
+     #   colors = ['r','b']
         # Loop through rows (experiments)
         for i, data in enumerate(files):
             # Plot return in the first column
@@ -96,15 +98,15 @@ def save_collision_log(collision_log_path, base_path_save):
 # ------------------------------------------------------------------------------------------------------------------------------------
 
 
-files = [torch.load("models/NO_piapua/500k_steps/stats.log"), torch.load("models/PIAPUA_2609/stats.log")]
+files = [torch.load("models/safety_tresholds/tresh=0.01/stats.log", map_location=torch.device('cpu')),torch.load("models/safety_tresholds/tresh=0.05/stats.log",map_location=torch.device('cpu')), torch.load("models/safety_tresholds/tresh=0.1/stats.log", map_location=torch.device('cpu')), torch.load("models/safety_tresholds/tresh=0.25/stats.log", map_location=torch.device('cpu'))]
 
-keys = ["NO PIAPUA - 500K MAX_TIMESTEPS", "PIAPUA - 500K MAX_TIMESTEPS"]
-base_path_save = "models/PIAPUA_2609/plots&tables"
+keys = ["tresh=0.01","tresh=0.05", "tresh=0.1", "tresh=0.25"]
+base_path_save = "models\safety_tresholds\plots&tables"
 
 create_plots(files, keys, base_path_save)
 
 
-save_collision_log("models/PIAPUA_2609/collision_info_log.log", "models/PIAPUA_2609")
+#save_collision_log("models/PIAPUA_2609/collision_info_log.log", "models/PIAPUA_2609")
 
 
 
@@ -117,6 +119,6 @@ def show_additional_stats(file_path):
     print("Amount of done out of all epochs", amount_of_done/len(rewards))
 
 
-show_additional_stats('models/PIAPUA_2609/stats.log')
+#show_additional_stats('models/PIAPUA_2609/stats.log')
 
 

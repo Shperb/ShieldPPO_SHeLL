@@ -183,7 +183,7 @@ def train(arguments=None):
                         help="learning rate for actor network")
     parser.add_argument("--lr_critic", type=float, default=0.0001,
                         help="learning rate for critic network")
-    parser.add_argument("--max_ep_len", type=int, default=10,
+    parser.add_argument("--max_ep_len", type=int, default=2,
                         help="max timesteps in one episode")
     parser.add_argument("--max_training_timesteps", type=int, default=int(1e6),
                         help="break training loop if timeteps > max_training_timesteps")
@@ -199,7 +199,7 @@ def train(arguments=None):
     parser.add_argument("--masking_threshold", type=int, default=0, help="Time step at which to start using the shield")
     parser.add_argument("--no_render", action="store_true", help="Disable rendering during simulation")
     parser.add_argument("--k_last_states", type=int, default=1, help="K last states to update the policies based on")
-    parser.add_argument("--safety_treshold", type=float, default=0.5, help= "safety_treshold")
+    parser.add_argument("--safety_treshold", type=float, default=0.5, help= "Safety treshold for the Shield network")
     args = parser.parse_args(arguments)
     # nv_name = "highway-three-v0"
     # env_name = "highway-v0"
@@ -258,6 +258,7 @@ def train(arguments=None):
     curr_time = datetime.now().strftime("%Y%m%d-%H%M%S")
     base_path = f"./models/safety_tresholds/{agent}_safety_tresh@_{safety_treshold}_{curr_time}"
     save_model_path = f"./{base_path}/model.pth"
+    # Added another path to save the shield network (updated parameters)
     save_shield_path = f"./{base_path}/shield.pth"
     save_collision_info_path = f"./{base_path}/collision_info_log.log"
     save_stats_path = f"./{base_path}/stats.log"
@@ -265,7 +266,7 @@ def train(arguments=None):
     os.makedirs(base_path, exist_ok=True)
     os.makedirs(base_path + "/Videos", exist_ok=True)
     # safe_rl_baselines = ['ppo_lagrangian', 'trpo', 'trpo_lagrangian', 'cpo']
-
+    # Create the object for agent
     with open(save_args_path, 'w') as f:
         json.dump(args.__dict__, f, indent=2)
     if agent == "PPO":
@@ -337,7 +338,7 @@ def train(arguments=None):
             trajectory.appendleft((action, state))
             if len(trajectory) > args.record_trajectory_length:
                 trajectory.pop()
-            # TODO - PIAPUA of the mistake
+            # Error Diffusion - "no safe action according to shield"
             if (len(prev_prev_states) > 0) and (time_step >= masking_threshold) and (no_safe_action == True) and (last_added_to_buffer == 1):
                 ppo_agent.move_last_pos_to_neg()
             if args.record_mistakes:
@@ -346,7 +347,6 @@ def train(arguments=None):
             ppo_agent.buffer.rewards.append(reward)
             ppo_agent.buffer.costs.append(info['cost'])
             ppo_agent.buffer.is_terminals.append(done)
-
             time_step += 1
             current_ep_reward += reward
             current_ep_cost += info['cost']
@@ -354,8 +354,7 @@ def train(arguments=None):
             if time_step % update_timestep == 0:
                 ppo_agent.update()
                 ("update succuess")
-            # the update of the shield is more frequent
-            # MeetingComment: ASK SHAHAF: before masking_treshold - base on what it updates the shield?! on decisions made by critic&actor nets
+            # The update of the shield is more frequent
             if time_step % update_shield_timestep == 0 and agent == "ShieldPPO":
                 shield_loss = ppo_agent.update_shield(1024)
                 shield_losses.append(shield_loss)
@@ -365,14 +364,12 @@ def train(arguments=None):
                 collision_info[time_step] = (i_episode, t, prev_states_vf, safety_scores, no_safe_action, action)
                 is_mistake = True
             if agent == "ShieldPPO" or agent == "RuleBasedShieldPPO":
-                # PADDING
+                # PADDING - if there are lest then k_last_states states - the list of states will be padded with dummy states (full with zero)
                 if len(prev_states) < k_last_states:
                     padding = [np.zeros_like(prev_states[0])] * (k_last_states - len(prev_states))
-                    # MeetingComment (!) change the padding to the end (instead of beggining)
                     padded_prev_states = prev_states + padding
                 else:
                     padded_prev_states = prev_states
-
                 if info["cost"] > 0:
                     # COLLISION
                     if args.record_mistakes:
@@ -382,12 +379,11 @@ def train(arguments=None):
                             for item in reversed(trajectory):
                                 f.write(f"{item}\n")
                     last_added_to_buffer = 0
-                    # MeetingComment (!) saved len(prev_states-1) becuase we need the index that's why i sent -1.
+                    #  The seccond argument is the last informative layer index - according to the original amount of states, with no padding)
                     ppo_agent.add_to_shield(padded_prev_states, len(prev_states) - 1, action, 0)
                 else:
                     last_added_to_buffer = 1
                     ppo_agent.add_to_shield(padded_prev_states,len(prev_states) -1, action, 1)
-
             # if continuous action space; then decay action std of ouput action distribution
             if has_continuous_action_space and time_step % action_std_decay_freq == 0:
                 ppo_agent.decay_action_std(action_std_decay_rate, min_action_std)
@@ -421,7 +417,6 @@ def train(arguments=None):
         tasks.append(task_name)
         time_steps.append(time_step)
         episodes_len.append(current_ep_len)
-
         if args.record_mistakes and not recorder_closed:
             video_recorder.close()
             if not is_mistake:
@@ -444,9 +439,8 @@ def train(arguments=None):
          'No Safe Action': no_safe_action, 'Chosen Action': action}
         for timestep, (i_episode, t, prev_states, safety_scores, no_safe_action, action) in collision_info.items()]
 
-    # Create a DataFrame from the list of dictionaries
+    # Collision_log_df - a dataframe with information regarding the collisions
     collision_log_df = pd.DataFrame(collision_log)
-
     # Save the DataFrame to a CSV file
     # collision_log_df.to_csv(save_collision_info_path, index=False)
     torch.save(collision_log_df, save_collision_info_path)

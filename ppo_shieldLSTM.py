@@ -7,9 +7,6 @@ from torch.distributions import MultivariateNormal
 from torch.distributions import Categorical
 from torch.nn.utils.rnn import pad_sequence
 
-# each input for 'point in time' is state-action pair, so each sequence len is k_last_states length and each batch_size is 1.
-# we have batch_size = 1 which is a disavantages.
-
 
 ################################## set device ##################################
 
@@ -30,6 +27,7 @@ else:
 class RolloutBuffer:
     def __init__(self):
         self.actions = []
+        # MeetingComment - changed states so now it stored a tuple - (k_last_states, last_informative_layer )
         self.states = []
         self.logprobs = []
         self.rewards = []
@@ -49,6 +47,7 @@ class RolloutBuffer:
 class ActorCritic(nn.Module):
     def __init__(self, state_dim, action_dim, has_continuous_action_space, action_std_init, k_last_states):
         super(ActorCritic, self).__init__()
+        # New argument - k_last_states
         self.k_last_states = k_last_states
         self.has_continuous_action_space = has_continuous_action_space
         self.state_dim = state_dim
@@ -58,7 +57,6 @@ class ActorCritic(nn.Module):
             self.action_var = torch.full(
                 (action_dim,), action_std_init * action_std_init).to(device)
         self.lstm = nn.LSTM(state_dim, 64, batch_first=True)
-
         # actor
         # for a given states returns the safety score per each action
         if has_continuous_action_space:
@@ -78,7 +76,6 @@ class ActorCritic(nn.Module):
                 nn.Linear(64, action_dim),
                 nn.Softmax(dim=-1)
             )
-
         # critic
         # for a given state - "how good it is"
         self.critic = nn.Sequential(
@@ -97,23 +94,25 @@ class ActorCritic(nn.Module):
             print("--------------------------------------------------------------------------------------------")
             print("WARNING : Calling ActorCritic::set_action_std() on discrete action space policy")
             print("--------------------------------------------------------------------------------------------")
-    # TODO - ADD LAST_INFORMATIVE_LAYER
-    def actor_forward(self, states):
+
+    #  Actor architecture is changed to LSTM, extracting the layer of the last state (with the needed information)
+    def actor_forward(self, states, last_informative_layers):
        # adding unsqueeze(0) for batch_size = 1
         lstm_output, _ = self.lstm(states)
         # last time steps's as oiutput - representation of the sequence
-        lstm_output_last = lstm_output[:, -1, :]
+        first_dim_len = len(lstm_output) - 1
+        lstm_output_last = lstm_output[first_dim_len, last_informative_layers, :]
         # Pass the LSTM output through the actor network
         actor_output = self.actor(lstm_output_last)
         return actor_output.squeeze(0) # dim [action_dim,] safety score per action
-    # TODO - ADD LAST_INFORMATIVE_LAYER
 
-    def critic_forward(self, states):
+    #  Critic architecture is changed to LSTM, extracting the layer of the last state (with the needed information)
+    def critic_forward(self, states, last_informative_layers):
         lstm_output, _ = self.lstm(states)
-        lstm_output_last = lstm_output[:, -1, :]
+        first_dim_len = len(lstm_output) - 1
+        lstm_output_last = lstm_output[first_dim_len,last_informative_layers, :]
         critic_output = self.critic(lstm_output_last)
         return critic_output.squeeze(0)
-
 
     def act(self, state):
         if self.has_continuous_action_space:
@@ -129,7 +128,7 @@ class ActorCritic(nn.Module):
 
         return action.detach(), action_logprob.detach()
 
-    def evaluate(self, states, action):
+    def evaluate(self, states, last_informative_layers,  action):
         if self.has_continuous_action_space:
             action_mean = self.actor_forward(states)
 
@@ -139,20 +138,18 @@ class ActorCritic(nn.Module):
             # For Single Action Environments.
             if self.action_dim == 1:
                 action = action.reshape(-1, self.action_dim)
-
         else:
-            if self.k_last_states == 1:
-                action_probs = self.actor_forward(states)
+            action_probs = self.actor_forward(states, last_informative_layers)
             dist = Categorical(action_probs)
         action_logprobs = dist.log_prob(action)
         dist_entropy = dist.entropy()
-        state_values = self.critic_forward(states)
+        state_values = self.critic_forward(states, last_informative_layers)
         return action_logprobs, state_values, dist_entropy
 
 
 class PPO:
     def __init__(self, state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-                 has_continuous_action_space, action_std_init=0.6, k_last_states=1):
+                 has_continuous_action_space, action_std_init=0.6, k_last_states = 1):
 
         self.has_continuous_action_space = has_continuous_action_space
 
@@ -269,15 +266,15 @@ class PPO:
         # Normalizing the rewards
         rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
-        # TODO - good for padding - check this. THE SQUEEZE REMOVES ZEROS
-        old_states = torch.squeeze(torch.stack(self.buffer.states, dim=0), 0).detach().to(device)
+        old_states_from_buffer, old_last_informative_layers = [state[0] for state in self.buffer.states], [state[1] for state in self.buffer.states]
+        old_states = torch.squeeze(torch.stack(old_states_from_buffer, dim=0), 0).detach().to(device)
         old_actions = torch.squeeze(torch.stack(self.buffer.actions, dim=0)).detach().to(device)
         old_logprobs = torch.squeeze(torch.stack(self.buffer.logprobs, dim=0)).detach().to(device)
 
         # Optimize policy for K epochs
         for _ in range(self.K_epochs):
             # Evaluating old actions and values
-            logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
+            logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_last_informative_layers , old_actions)
 
             # match state_values tensor dimensions with rewards tensor
             state_values = torch.squeeze(state_values)
@@ -295,8 +292,6 @@ class PPO:
             # take gradient step
             self.optimizer.zero_grad()
             loss.mean().backward()
-            print("loss from update", loss.mean())
-
             self.optimizer.step()
 
         # Copy new weights into old policy
@@ -314,7 +309,6 @@ class PPO:
 
 
 class PPOCostAsReward(PPO):
-
     def update(self):
         # Monte Carlo estimate of returns
         rewards = []
@@ -371,10 +365,14 @@ class PPOCostAsReward(PPO):
 class ShieldBuffer:
     def __init__(self, n_max=1000000):
         self.n_max = n_max
+        # pos_rb - a buffer that saves tupple, each tuple is (s, last_informative_layer,a) - last_informative_layer before padding. for positive actions.
+        # neg_rb - a buffer that saves tupple, each tuple is (s, last_informative_layer,a) - last_informative_layer before padding. for negative actions.
+        # positive_action - no collision, negative_actions - result collision
         self.pos_rb = []
         self.neg_rb = []
 
     def move_last_pos_to_neg(self):
+        # Error Diffusion - "no safe action according to shield"
         if len(self.pos_rb) > 1:
             self.neg_rb.append(self.pos_rb[-1])
             self.pos_rb = self.pos_rb[:-1]
@@ -425,9 +423,7 @@ class Shield(nn.Module):
 
     def forward(self, s, last_informative_layers, a):
         """
-        tensor(8,3,71)
-        tensor(8,)
-    tensor(8,)
+        Receives a batch of states and actions.  (the batch can be size 1)
 
         s - last k_states (or less) for each sample in the batch
         last_informative_layers - index of the last informative layer - for each sample in the batch
@@ -437,9 +433,11 @@ class Shield(nn.Module):
         lstm_output, _ = self.lstm(s)
         # PREVIOUS - Selecting the last layer - hidden state which captures the relevant information from entire sequence (states)
         # lstm_output_last = lstm_output[:, -1, :]  # Shape: [1, hidden_dim]
-        # MeetingComment - (!) select the last informative layer
-        # MeetingComment - ASK SHAHAF: DOES IT RETURN THE SCORE FOR A SPECEIFIC ACTION? SEE THE DIFFERENT BETWEEN 'SELECT_ACTION' AND 'UPDATE-SHIELD'
-        lstm_output_last = torch.stack([t[int(last_informative_layers[i].item())] for i, t in enumerate(lstm_output)])
+        last_informative_layers_casted = [int(ind.item()) for ind in last_informative_layers]
+        # lstm_output_last = torch.stack([t[int(last_informative_layers[i].item())] for i, t in enumerate(lstm_output)])
+        first_dim_len = len(lstm_output) - 1
+        # select the last layer of the LSTM Shield network according to the index of the last layer (without padding)
+        lstm_output_last = lstm_output[first_dim_len, last_informative_layers_casted, :]
         x = torch.cat([lstm_output_last, a], -1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
@@ -463,7 +461,7 @@ class ShieldPPO(PPO):  # currently only discrete action
                  has_continuous_action_space, action_std_init=0.6, masking_threshold=0, k_last_states=1, safety_treshold = 0.5):
         super().__init__(state_dim, action_dim,
                          lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-                         has_continuous_action_space, action_std_init, k_last_states=1)
+                         has_continuous_action_space, action_std_init, k_last_states)
         self.action_dim = action_dim
         self.shield = Shield(state_dim, action_dim, has_continuous_action_space, k_last_states=k_last_states).to(device)
         self.shield_opt = torch.optim.Adam(self.shield.parameters(), lr=5e-4)
@@ -474,10 +472,10 @@ class ShieldPPO(PPO):  # currently only discrete action
         self.safety_treshold = safety_treshold
 
     def move_last_pos_to_neg(self):
+        # Error Diffusion - "no safe error according to shield"
         self.shield_buffer.move_last_pos_to_neg()
 
     def add_to_shield(self, s, last_informative_layer, a, label):
-        #MeetingComment - (!) save the last_informative_layer with to the shield buffer also
         self.shield_buffer.add(s, last_informative_layer, a, label)
 
     def update_shield(self, batch_size):
@@ -501,6 +499,7 @@ class ShieldPPO(PPO):  # currently only discrete action
             loss_ += loss.item()
         return loss_ / self.K_epochs
 
+
     def select_action(self, states, valid_actions, timestep):
         valid_mask = torch.zeros(self.action_dim).to(device)
         no_safe_action = False
@@ -508,23 +507,21 @@ class ShieldPPO(PPO):  # currently only discrete action
             valid_mask[a] = 1.0
         with torch.no_grad():
             states_tensor = torch.FloatTensor(states).to(device)
-            # the last state is the states[-1] since there's no masking
+            # the last state is the states[-1]  - because there is no padding
             last_state = states[-1]
             state = torch.FloatTensor(last_state).to(device)
-            action_probs = self.policy_old.actor_forward(states_tensor.unsqueeze(0))
-            # it will have self.k_last_states rows, each with the same action indices
-            # Prepare the actions tensor based on the number of states
+            action_probs = self.policy_old.actor_forward(states_tensor.unsqueeze(0), len(states)-1)
+            # it will have self.k_last_states rows, each with the same action indices - for the batch prediction
             actions = torch.arange(self.action_dim).to(device)  # (n_action,)
-            # prepare it for the safety_scores
             actions_ = [tensor.unsqueeze(0) for tensor in actions]
-            # MeetingComment - (!) changed the shield input (states_) so it will not repeat itself action_dim times.
-            states_ = states_tensor.unsqueeze(0)  # (n_action, state_dim)
+            # states_ - a batch of self.action_dim repeated states_ tensor, if self.action_dim is 5 so the batch_size is equal to 5.
+            states_ = states_tensor.unsqueeze(0).repeat(self.action_dim, 1, 1)
             if timestep >= self.masking_threshold:
-                #   print("USING SAFETY MASKING")
-                ## BATCH_SIZE = 1 SEQEUENCE = 1, EACH SEQUENCE LENGTH IS - K_LAST_STATES
-                # MeetingComment - (!) SENT LEN(STATES-1) TO SHIELD. BECAUSE THIS IS THE LAST LAYER - only one forward (not batch)
-                # MeetingComment - (!) - change safety_scores so now it summons self.shield() per each action SEPARATELY - what is better?
-                safety_scores = [self.shield(states_, torch.tensor([len(states)-1]), a) for a in actions_]
+                #  print("USING SAFETY MASKING")
+                # BATCH_SIZE = self.action_dim,  EACH SEQUENCE LENGTH IS - K_LAST_STATES
+                # Send the Shield network a batch of size self.action_dim
+                last_informative_layer_repeated = torch.Tensor([len(states)-1] * self.action_dim).to(torch.int)
+                safety_scores = self.shield(states_, last_informative_layer_repeated,  actions)
                 mask = torch.tensor(safety_scores).gt(self.safety_treshold).float().to(device)
                 mask = valid_mask * mask
                 action_probs_ = action_probs.clone()
@@ -532,11 +529,11 @@ class ShieldPPO(PPO):  # currently only discrete action
                     # AT LEAST ONE ACTION IS CONSIDERED SAFE
                     action_probs_[mask == 0] = -1e10
                 else:
-                    # No safe action according to shield (all zeros - below 0.5)
+                    # No safe action according to shield
+                    # If it happened - it means that the 'problem' is in the action selected by previous state. The state is not safe so none of the actions is safe according to shield.
                     print("No safe action according to shield")
                     no_safe_action = True
-                    # TODO - NO SAFE ACTION ACCORDING TO SHIELD - MABYE THE STATE IS UNSAFE FROM THE BEGGINING
-                    # TODO -  WE SHOULD LET THE NETWORK KNOW THAT THIS STATE IS UNSAFE WITH THE ACTION THAT LED TO IT
+                    # Solution - Error Diffusion - teach  the network that the prev state prev state is not safe (from highway.py)
                     action_probs_[valid_mask == 0] = -1e10
             else:
                 #   print("NOT USING SAFETY MASKING")
@@ -548,25 +545,23 @@ class ShieldPPO(PPO):  # currently only discrete action
                 else:
                     print("NO VALID ACTIONS AT ALL - SHOULDN'T HAPPEN ")
                     action_probs_[valid_mask == 0] = -1e10
-            ## FOR ALL STATES (SEQUENCE)
             action_probs_ = F.softmax(action_probs_)
             dist = Categorical(action_probs_)
             dist2 = Categorical(action_probs)
         # action - [k_last_states, action_dim] -
         action = dist.sample()
-        # action_logprob = action_probs_[-1, action].log()
         action_logprob = dist2.log_prob(action)
 
         # convert list to tensor
         padding_rows = max(0, self.k_last_states - states_tensor.shape[0])
         if padding_rows > 0:
-            # Create a tensor of zeros with the same shape as the states except for the first dimension
+            # adding padded_states to the ActorCritic buffer.
             zeros = torch.zeros((padding_rows,) + states_tensor.shape[1:])
-            padded_states = torch.cat((zeros, states_tensor), dim=0)
+            padded_states = torch.cat((states_tensor, zeros), dim=0)
         else:
             # If no padding is needed, keep the original tensor
             padded_states = states_tensor
-        self.buffer.states.append(padded_states)
+        self.buffer.states.append((padded_states, len(states_tensor)-1))
         self.buffer.actions.append(action)
         self.buffer.logprobs.append(action_logprob)
         if timestep >= self.masking_threshold:
@@ -582,6 +577,7 @@ class ShieldPPO(PPO):  # currently only discrete action
 
 
     def load(self, checkpoint_path_ac, checkpoint_path_shield):
+        # Load the models - Shield, policy, old_policy
         self.policy_old.load_state_dict(torch.load(checkpoint_path_ac, map_location=lambda storage, loc: storage))
         self.policy.load_state_dict(torch.load(checkpoint_path_ac, map_location=lambda storage, loc: storage))
         self.shield.load_state_dict(torch.load(checkpoint_path_shield, map_location=lambda storage, loc: storage))

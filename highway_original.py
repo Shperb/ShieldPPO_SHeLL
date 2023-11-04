@@ -1,30 +1,28 @@
 import argparse
 import collections
 import json
-
 import gym
 import os
 import glob
 import time
 from datetime import datetime
-
 import torch
 import torch.nn as nn
 from gym.utils import seeding
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
 from highway_env.envs import HighwayEnvFast, MergeEnv
-
-#import tensorflow as tf
+from safe_rl.utils.mpi_tools import mpi_fork
+from safe_rl.utils.run_utils import setup_logger_kwargs
+import tensorflow as tf
+import safe_rl
 from torch.distributions import MultivariateNormal
 from torch.distributions import Categorical
-
 import numpy as np
-
 import gym
 import highway_env
 
 from SafetyRulesParser import SafetyRulesParser
-from ppo_original import PPO, ShieldPPO, RuleBasedShieldPPO, PPOCostAsReward
+from ppo import PPO, ShieldPPO, RuleBasedShieldPPO, PPOCostAsReward
 from gym import spaces, register
 import sys
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
@@ -61,7 +59,7 @@ class EnvsWrapper(gym.Wrapper):
         self.np_random = self.np_random, _ = seeding.np_random(seed)
         self.env_index = self.np_random.randint(0, len(envs))
         super().__init__(self.envs[self.env_index])
-        self.state_dim = np.prod(self.env.observation_space.shape) + len(envs)        # low = self.env.observation_space.low
+        self.state_dim =  np.prod(self.env.observation_space.spaces[0].shape) + self.env.observation_space.spaces[1].n + len(envs)
         # low = self.env.observation_space.low
         # high = self.env.observation_space.high
         # dim_state = np.prod(self.env.observation_space.shape)
@@ -147,19 +145,15 @@ def train(arguments = None):
                         help="algorithm to use:  PPO | ShieldPPO | RuleBasedShieldPPO (REQUIRED)")
     parser.add_argument("--envs", default=["HighwayEnvFastNoNormalization-v0"], nargs="+",
                         help="names of the environment to train on")
-    # defult=1000
-    parser.add_argument("--print_freq", default=50,
+    parser.add_argument("--print_freq", default=1000,
                         help="print avg reward in the interval (in num timesteps)")
     parser.add_argument("--seed", type=int, default=1,
                         help="random seed (default: 1)")
-    # defult=1000
-    parser.add_argument("--log_freq", type=int, default=50,
+    parser.add_argument("--log_freq", type=int, default=1000,
                         help="log avg reward in the interval (in num timesteps)")
-    # defult=1000
-    parser.add_argument("--save_model_freq", type=int, default=50,
+    parser.add_argument("--save_model_freq", type=int, default=int(5e4),
                         help="save model frequency (in num timesteps)")
-    # defult=10
-    parser.add_argument("--K_epochs", type=int, default=5,
+    parser.add_argument("--K_epochs", type=int, default=10,
                         help="update policy for K epochs")
     parser.add_argument("--eps_clip", type=float, default=0.1,
                         help="clip parameter for PPO")
@@ -169,12 +163,9 @@ def train(arguments = None):
                         help="learning rate for actor network")
     parser.add_argument("--lr_critic", type=float, default=0.0001,
                         help="learning rate for critic network")
-    # defult=50
-    parser.add_argument("--max_ep_len", type=int, default=10,
+    parser.add_argument("--max_ep_len", type=int, default=500,
                         help="max timesteps in one episode")
-    # defult=50,000
-    parser.add_argument("--max_training_timesteps", type=int, default=500
-                        ,
+    parser.add_argument("--max_training_timesteps", type=int, default=int(1e6),
                         help="break training loop if timeteps > max_training_timesteps")
     parser.add_argument("--record_mistakes", type=bool, default=False,
                         help="record episodes with mistakes")
@@ -260,6 +251,47 @@ def train(arguments = None):
     elif agent == 'PPOCAR':
         ppo_agent = PPOCostAsReward(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
                         has_continuous_action_space, action_std)
+    elif agent in safe_rl_baselines:
+
+        agent = agent.lower()
+
+        # Hyperparameters
+        exp_name = agent
+
+        steps_per_epoch = args.max_ep_len * args.cpu
+        num_steps = args.max_training_timesteps # subject to change
+
+        epochs = int(num_steps / steps_per_epoch)
+        save_freq = 10
+        target_kl = 0.01
+        cost_lim = 1e-4
+
+        # Fork for parallelizing
+        mpi_fork(args.cpu)
+
+        # Prepare Logger
+        logger_kwargs = setup_logger_kwargs(exp_name, args.seed, data_dir="./data")
+
+        # Algo and Env
+        algo_name = agent
+        algo = eval('safe_rl.'+agent)
+
+
+        algo(env_fn=lambda: multi_task_env,
+             ac_kwargs=dict(
+                 hidden_sizes=(64, 64),
+                 activation=tf.nn.relu,
+                ),
+             epochs=epochs,
+             steps_per_epoch=steps_per_epoch,
+             max_ep_len=args.max_ep_len,
+             save_freq=save_freq,
+             target_kl=target_kl,
+             cost_lim=cost_lim,
+             seed=args.seed,
+             logger_kwargs=logger_kwargs,
+             )
+        return
     else:
         raise NotImplementedError
     time_step = 0
@@ -273,11 +305,11 @@ def train(arguments = None):
     start_time = time.time()
     # training loop
     while time_step <= max_training_timesteps:
-        print("Current time_step is ", time_step)
+
         state = multi_task_env.reset()
         task_name = multi_task_env.get_current_env_name()
         valid_actions = multi_task_env.get_valid_actions()
-        trajectory = collections.deque([state]) # MASLUL
+        trajectory = collections.deque([state])
         recorder_closed = False
         current_ep_reward = 0
         current_ep_cost = 0
@@ -293,6 +325,7 @@ def train(arguments = None):
             # select action with policy
             if args.render:
                 multi_task_env.env.render()
+
             action = ppo_agent.select_action(state, valid_actions)
             prev_state = state
             state, reward, done, info = multi_task_env.step(action)
@@ -302,14 +335,10 @@ def train(arguments = None):
             if args.record_mistakes:
                 video_recorder.capture_frame()
             # saving reward and is_terminals
-            print("reward is", reward)
-            print("cost is", info['cost'])
-            print("done is", done)
-
             ppo_agent.buffer.rewards.append(reward)
             ppo_agent.buffer.costs.append(info['cost'])
             ppo_agent.buffer.is_terminals.append(done)
-            # time_step = each action
+
             time_step += 1
             current_ep_reward += reward
             current_ep_cost += info['cost']
@@ -342,7 +371,6 @@ def train(arguments = None):
                 ppo_agent.decay_action_std(action_std_decay_rate, min_action_std)
 
             # log in logging file
-            # every log_freq time_steps (actions) it saves the lists until the current epoch (lists updated until current epoch)
             if time_step % log_freq == 0:
                 torch.save((time_steps, rewards, costs, tasks), save_stats_path)
 
@@ -364,7 +392,7 @@ def train(arguments = None):
 
             if done:
                 break
-        # rewards, costs, tasks, time_steps = each element represents the sum of value during one epoch
+
         rewards.append(current_ep_reward)
         costs.append(current_ep_cost)
         tasks.append(task_name)
@@ -379,19 +407,8 @@ def train(arguments = None):
                     for item in reversed(trajectory):
                         f.write("%s\n" % item)
         i_episode += 1
-    print("rewards: ", len(rewards))
-    print("costs: ", len(costs))
-    print("tasks: ", len(tasks))
-    print("time_steps: ", len(time_steps))
-
     multi_task_env.close()
 
 
 if __name__ == '__main__':
     train()
-
-
-# rewards: A list containing the cumulative reward obtained in each episode (each element represents an episode)
-# Costs - same but for costs
-# tasks - the task for each episode (task = env)
-# time_steps =  A list containing the total number of time steps (actions) taken until the end of each episode - culumative until this episode (includes all the previous time steps)

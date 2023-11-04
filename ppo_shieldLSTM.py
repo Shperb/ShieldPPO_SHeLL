@@ -473,6 +473,8 @@ class ShieldPPO(PPO):  # currently only discrete action
 
     def move_last_pos_to_neg(self):
         # Error Diffusion - "no safe error according to shield"
+        # in this case we assume that it happens because there are no safe actions from the given state
+        # so we want to teach the agent that the prev state and the action that led to the current state is a bad example for shield buffer.
         self.shield_buffer.move_last_pos_to_neg()
 
     def add_to_shield(self, s, last_informative_layer, a, label):

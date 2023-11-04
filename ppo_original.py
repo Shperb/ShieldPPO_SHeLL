@@ -189,7 +189,6 @@ class PPO:
         valid_mask = torch.zeros(self.action_dim).to(device)
         for a in valid_actions:
             valid_mask[a] = 1.0
-
         if self.has_continuous_action_space:
             with torch.no_grad():
                 state = torch.FloatTensor(state).to(device)
@@ -367,6 +366,7 @@ class ShieldBuffer:
 class Shield(nn.Module):
     def __init__(self, state_dim, action_dim, has_continuous_action_space):
         super().__init__()
+
         hidden_dim = 256
         self.has_continuous_action_space = has_continuous_action_space
         if not self.has_continuous_action_space:
@@ -399,10 +399,8 @@ class Shield(nn.Module):
         a_pos = self.encode_action(a_pos)
         a_neg = self.encode_action(a_neg)
         x_pos = torch.cat([s_pos, a_pos], -1)
-        print("@from shield - how x_pos look like", x_pos.shape)
         x_neg = torch.cat([s_neg, a_neg], -1)
         y_pos = self.net(x_pos)
-        print("@from shield - how y_pos look like", y_pos.shape)
         y_neg = self.net(x_neg)
         loss = self.loss_fn(y_pos, torch.ones_like(y_pos)) + self.loss_fn(y_neg, torch.zeros_like(y_neg))
         return loss
@@ -429,13 +427,9 @@ class ShieldPPO(PPO):  # currently only discrete action
             batch_size = len(self.shield_buffer)
         loss_ = 0.
         for i in range(self.K_epochs):
-            print("@from update - batch size is", batch_size)
             s_pos, a_pos, s_neg, a_neg = self.shield_buffer.sample(batch_size)
             self.shield_opt.zero_grad()
-            print("@from update - how s_pos look like", s_pos.shape)
-            print("@from update - how a_pos look like", a_pos.shape)
             loss = self.shield.loss(s_pos, a_pos, s_neg, a_neg)
-            print("@from update - how loss look like", loss)
             loss.backward()
             self.shield_opt.step()
             loss_ += loss.item()
@@ -445,16 +439,17 @@ class ShieldPPO(PPO):  # currently only discrete action
         valid_mask = torch.zeros(self.action_dim).to(device)
         for a in valid_actions:
             valid_mask[a] = 1.0
+
         with torch.no_grad():
             state = torch.FloatTensor(state).to(device)
             action_probs = self.policy_old.actor(state)
+
             actions = torch.arange(self.action_dim).to(device)  # (n_action,)
-            # the input for the shield is the state that returns 5 times
             state_ = state.view(1, -1).repeat(self.action_dim, 1)  # (n_action, state_dim)
-            # returns a safety score per each action from the state
             safety = self.shield(state_, actions)  # (n_action)
             mask = safety.gt(0.5).float().view(-1)
             mask = valid_mask * mask
+
             action_probs_ = action_probs.clone()
             if mask.sum().item() > 0:
                 action_probs_[mask == 0] = -1e10
@@ -591,4 +586,3 @@ class RuleBasedShieldPPO(PPO):
         #         self.buffer.actions.append(action)
         #         self.buffer.logprobs.append(action_logprob)
         #         return action.item()
-

@@ -1,5 +1,4 @@
 # imports
-
 import pandas as pd
 import argparse
 import collections
@@ -41,10 +40,11 @@ class Wrapper(gym.Wrapper):
                                             dtype=np.float32)
 
     def observation(self, obs):
+        # the function returns an observation
         return obs.reshape(-1)
 
     def reset(self):
-        # returns the first observation
+        # returns the first observation of the env
         obs = self.env.reset()
         return self.observation(obs)
 
@@ -339,6 +339,7 @@ def train(arguments=None):
             if len(trajectory) > args.record_trajectory_length:
                 trajectory.pop()
             # Error Diffusion - "no safe action according to shield"
+            # in this case we assume that it happens because there are no safe actions from the given state, so we want to teach the agent that the prev state and the action that led to the current state is a bad example for shield buffer.
             if (len(prev_prev_states) > 0) and (time_step >= masking_threshold) and (no_safe_action == True) and (last_added_to_buffer == 1):
                 ppo_agent.move_last_pos_to_neg()
             if args.record_mistakes:
@@ -364,7 +365,7 @@ def train(arguments=None):
                 collision_info[time_step] = (i_episode, t, prev_states_vf, safety_scores, no_safe_action, action)
                 is_mistake = True
             if agent == "ShieldPPO" or agent == "RuleBasedShieldPPO":
-                # PADDING - if there are lest then k_last_states states - the list of states will be padded with dummy states (full with zero)
+                # PADDING - for less than k_last_states states - the list of states will be padded with dummy states (full with zero)
                 if len(prev_states) < k_last_states:
                     padding = [np.zeros_like(prev_states[0])] * (k_last_states - len(prev_states))
                     padded_prev_states = prev_states + padding
@@ -379,7 +380,7 @@ def train(arguments=None):
                             for item in reversed(trajectory):
                                 f.write(f"{item}\n")
                     last_added_to_buffer = 0
-                    #  The seccond argument is the last informative layer index - according to the original amount of states, with no padding)
+                    #  The seccond argument is the last informative layer index - according to the original amount of states, with no padding.
                     ppo_agent.add_to_shield(padded_prev_states, len(prev_states) - 1, action, 0)
                 else:
                     last_added_to_buffer = 1

@@ -2,6 +2,28 @@ from gym.envs.registration import register
 from highway_env import utils
 from highway_env.envs import HighwayEnvFast, HighwayEnv, IntersectionEnv, RoundaboutEnv, UTurnEnv, TwoWayEnv, MergeEnv
 from highway_env.vehicle.controller import ControlledVehicle
+import constants
+from classic_control_env.cartpole import CartPoleEnv
+
+
+class CartPoleImageWithCost(CartPoleEnv):
+    def __init__(self):
+        super().__init__()
+
+    def _cost(self, state):
+        pole_angle = state[2]
+        cart_position = state[0]
+        return 1 if abs(pole_angle) >= 0.2095 or abs(cart_position) >= 2.4 else 0
+
+
+class CartPoleWithCost(CartPoleEnv):
+    def __init__(self):
+        super().__init__()
+
+    def _cost(self, state):
+        pole_angle = state[2]
+        cart_position = state[0]
+        return 1 if abs(pole_angle) >= 0.2095 or abs(cart_position) >= 2.4 else 0
 
 
 class HighwayEnvFastNoNormalization(HighwayEnvFast):
@@ -20,7 +42,59 @@ class HighwayEnvFastNoNormalization(HighwayEnvFast):
                 "type": "Kinematics",
                 "vehicles_count": 10,
                 "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
+            },
+            "duration": 50,
+            "vehicles_count": 20,
+            "vehicles_density": 2,
+        })
+        return cfg
 
+    def _cost(self, action: int) -> float:
+        """The constraint signal is the occurrence of collisions."""
+        return float(self.vehicle.crashed)
+
+
+class HighwayEnvFastNoNormalizationOccupancyGrid(HighwayEnvFast):
+    """
+    A variant of highway-v0 with different observation type (OccupancyGrid):
+    """
+    @classmethod
+    def default_config(cls) -> dict:
+        cfg = super().default_config()
+        cfg.update({
+            "observation": {
+                "normalize": False,
+                "type": "OccupancyGrid",
+                "vehicles_count": constants.VEHICLE_COUNT,
+                "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
+
+            },
+            "duration": 50,
+            "vehicles_count": 20,
+            "vehicles_density": 2,
+        })
+        return cfg
+
+    def _cost(self, action: int) -> float:
+        """The constraint signal is the occurrence of collisions."""
+        return float(self.vehicle.crashed)
+
+
+class HighwayEnvFastNoNormalizationGrayscale(HighwayEnvFast):
+    """
+    A variant of highway-v0 with different observation type (Grayscale):
+    """
+    @classmethod
+    def default_config(cls) -> dict:
+        cfg = super().default_config()
+        cfg.update({
+            "observation": {
+                "normalize": False,
+                "type": "GrayscaleObservation",
+                "observation_shape": (constants.HW_IMAGE_WIDTH, constants.HW_IMAGE_HEIGHT),
+                "stack_size": 1,
+                "weights": [0.2989, 0.5870, 0.1140],  # weights for RGB conversion
+                "scaling": 1.75,
             },
             "duration": 50,
             "vehicles_count": 20,

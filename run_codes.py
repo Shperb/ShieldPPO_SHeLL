@@ -71,28 +71,31 @@ def plot_shield_loss(shield_loss_stats_df, save_path):
     plt.show()
 
 
-def plot_rewards(df, save_path):
-    plt.plot(df[0], smooth(df[1], 2000))
+def plot_rewards(df, save_path, obs):
+    plt.plot(df[0], smooth(df[1], 5000))
     plt.xlabel('Time Step')
     plt.ylabel('Avg Episodic Reward')
+    plt.title(f'{obs} Observation')
     plt.legend()
     plt.savefig(save_path)
     plt.show()
 
 
-def plot_collisions(df, save_path):
-    plt.plot(df[0], smooth(df[2]))
+def plot_collisions(df, save_path, obs):
+    plt.plot(df[0], smooth(df[2], 1000))
     plt.xlabel('Time Step')
     plt.ylabel('Collisions')
+    plt.title(f'{obs} Observation')
     plt.legend()
     plt.savefig(save_path)
     plt.show()
 
 
-def plot_shield_loss_new(df, save_path):
+def plot_shield_loss_new(df, save_path, obs):
     plt.plot(df[0], smooth(df[1], 50))
     plt.xlabel('Time Step')
     plt.ylabel('Shield Loss')
+    plt.title(f'{obs} Observation')
     plt.legend()
     plt.savefig(save_path)
     plt.show()
@@ -102,26 +105,28 @@ dev = 'cpu'
 
 
 def plot_camera(stats_type):
+    obs = 'Camera'
     folder_path = f"models/{stats_type}_stats/Camera_20231225-195134"
     stats = torch.load(f"{folder_path}/stats.log", map_location=torch.device(dev))
-    plot_collisions(stats, f"{folder_path}/collisions.png")
-    plot_rewards(stats, f"{folder_path}/rewards.png")
+    plot_collisions(stats, f"{folder_path}/collisions.png", obs)
+    plot_rewards(stats, f"{folder_path}/rewards.png", obs)
     shield_loss_stats_df = torch.load(f"{folder_path}/shield_loss_stats.log", map_location=torch.device(dev))
-    plot_shield_loss_new(shield_loss_stats_df, f"{folder_path}/shield_loss.png")
+    plot_shield_loss_new(shield_loss_stats_df, f"{folder_path}/shield_loss.png", obs)
 
 
 def plot_kinematics(stats_type):
-    folder_path = f"models/{stats_type}_stats/Kinematics_20231225-195134"
+    obs = 'Kinematics'
+    folder_path = f"models/{stats_type}_stats/2812/Kinematics_20231227-220531"
     stats = torch.load(f"{folder_path}/stats.log", map_location=torch.device(dev))
-    plot_collisions(stats, f"{folder_path}/collisions.png")
-    plot_rewards(stats, f"{folder_path}/rewards.png")
+    plot_collisions(stats, f"{folder_path}/collisions.png", obs)
+    plot_rewards(stats, f"{folder_path}/rewards.png", obs)
     shield_loss_stats_df = torch.load(f"{folder_path}/shield_loss_stats.log", map_location=torch.device(dev))
-    plot_shield_loss_new(shield_loss_stats_df, f"{folder_path}/shield_loss.png")
+    plot_shield_loss_new(shield_loss_stats_df, f"{folder_path}/shield_loss.png", obs)
 
 
 stats_type = 'Cartpole'
-stats_type = 'Highway'
-plot_camera(stats_type)
+# stats_type = 'Highway'
+# plot_camera(stats_type)
 plot_kinematics(stats_type)
 
 # obs_name = "Camera"

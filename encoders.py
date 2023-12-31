@@ -25,12 +25,12 @@ class ObservationType(Enum):
 class CameraEncoder(nn.Module):
     def __init__(self, width, height, colors):
         super(CameraEncoder, self).__init__()
-        self.conv1 = nn.Conv2d(colors, 12, kernel_size, stride).to(device)
-        self.bn1 = nn.BatchNorm2d(12).to(device)
-        self.conv2 = nn.Conv2d(12, 24, kernel_size, stride).to(device)
-        self.bn2 = nn.BatchNorm2d(24).to(device)
-        self.conv3 = nn.Conv2d(24, 24, kernel_size, stride).to(device)
-        self.bn3 = nn.BatchNorm2d(24).to(device)
+        self.conv1 = nn.Conv2d(colors, 16, kernel_size, stride).to(device)
+        self.bn1 = nn.BatchNorm2d(16).to(device)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size, stride).to(device)
+        self.bn2 = nn.BatchNorm2d(32).to(device)
+        self.conv3 = nn.Conv2d(32, 32, kernel_size, stride).to(device)
+        self.bn3 = nn.BatchNorm2d(32).to(device)
         self.w, self.h = width, height
         self.colors = colors
 
@@ -39,7 +39,7 @@ class CameraEncoder(nn.Module):
 
         conv_w = conv2d_size_out(conv2d_size_out(conv2d_size_out(width)))
         conv_h = conv2d_size_out(conv2d_size_out(conv2d_size_out(height)))
-        linear_input_size = conv_w * conv_h * 24  # output size of the convolutional layers
+        linear_input_size = conv_w * conv_h * 32  # output size of the convolutional layers
         self.output = nn.Linear(linear_input_size, feature_size).to(device)
         self.norm = L2Norm()
 

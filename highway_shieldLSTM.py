@@ -262,6 +262,7 @@ def train(args, env_name):
 
     folder_name = "Highway_stats" if 'Highway' in env_name else "CartPole_stats"
     base_path = f"./models/{folder_name}/{obs_name}_{curr_time}"
+    print(base_path)
     save_model_path = f"./{base_path}/model.pth"
     # Added another path to save the shield network (updated parameters)
     save_shield_path = f"./{base_path}/shield.pth"
@@ -294,7 +295,6 @@ def train(args, env_name):
     start_time = time.time()
     amount_of_done = 0
     num_of_collisions = 0
-    max_training_timesteps = max_training_timesteps / 2
     # training loop
     while time_step <= max_training_timesteps:
         # NEW EPOCH / EPISODE (defined by i_episode) - EACH EPISODE STARTS WITH A NEW STATE
@@ -500,7 +500,7 @@ def get_args():
     parser.add_argument("--pos_to_neg_threshold", type=int, default=100000, help="Time step at which to start using the shield")
     parser.add_argument("--no_render", action="store_true", help="Disable rendering during simulation")
     parser.add_argument("--k_last_states", type=int, default=1, help="K last states to update the policies based on")
-    parser.add_argument("--safety_threshold", type=float, default=0.5, help="safety_threshold")
+    parser.add_argument("--safety_threshold", type=float, default=0.1, help="safety_threshold")  # 0.5
     return parser.parse_args()
 
 

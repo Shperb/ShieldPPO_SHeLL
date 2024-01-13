@@ -289,7 +289,6 @@ def train(arguments = None):
             trajectory_path = f"{base_video_path}/episode_" + str(i_episode) +"_trajectory.txt"
             video_recorder = VideoRecorder(multi_task_env.env, base_path=video_path, enabled=video_path is not None)
         for t in range(1, max_ep_len + 1):
-
             # select action with policy
             if args.render:
                 multi_task_env.env.render()

@@ -51,8 +51,8 @@ class CameraEncoder(nn.Module):
         return self.norm(self.output(x.view(x.size(0), -1)))
 
     def encode(self, states):
-        batch_size, k = states.size(0), states.size(1)
-        encoded_states = self.forward(states.view(batch_size * k, self.colors, self.w, self.h)).view(batch_size, k, feature_size)
+        batch_size = states.size(0)
+        encoded_states = self.forward(states.view(batch_size, self.colors, self.w, self.h)).view(batch_size, feature_size)
         return encoded_states
 
 
@@ -71,11 +71,7 @@ class KinematicsEncoder(nn.Module):
         return x
 
     def encode(self, states):
-        batch_size, k = states.size(0), states.size(1)
-        states = states.view(batch_size * k, self.input_size)
-        encoded_states = self.forward(states)
-        encoded_states = encoded_states.view(batch_size, k, feature_size)
-        return encoded_states
+        return self.forward(states)
 
 
 class L2Norm(nn.Module):

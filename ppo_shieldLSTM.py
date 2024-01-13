@@ -9,7 +9,7 @@ from torch.nn.utils.rnn import pad_sequence
 import threading
 import constants
 import encoders
-from agent_types import ObservationType
+# from agent_types import ObservationType
 
 ################################## set device ##################################
 
@@ -28,6 +28,8 @@ def print_tensor(t, msg, four=False):
     num_of_states1 = t.size(1)
     num_of_states2 = t.size(2)
     suffix = ''
+    if num_of_states0 == 512:
+        print("now")
     if four:
         num_of_states3 = t.size(3)
         suffix = ', ' + str(num_of_states3)
@@ -148,7 +150,7 @@ class ActorCritic(nn.Module):
 
     def evaluate(self, states, last_informative_layers, action):
         if self.has_continuous_action_space:
-            action_mean = self.actor_forward(states)
+            action_mean = self.actor_forward(states, last_informative_layers)
 
             action_var = self.action_var.expand_as(action_mean)
             cov_mat = torch.diag_embed(action_var).to(device)
@@ -259,6 +261,7 @@ class PPO:
                 state = torch.FloatTensor(state).to(device)
                 action_probs = self.policy_old.actor(state)
                 action_probs_ = action_probs.clone()
+                # valid_mask = valid_mask.unsqueeze(0)
                 action_probs_[valid_mask == 0] = -1e10
                 action_probs_ = F.softmax(action_probs_)
                 dist = Categorical(action_probs_)
@@ -293,6 +296,8 @@ class PPO:
         for _ in range(self.K_epochs):
             # Evaluating old actions and values
             logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_last_informative_layers, old_actions)
+            # (1600, 3, 4)
+            # [1600]
 
             # match state_values tensor dimensions with rewards tensor
             state_values = torch.squeeze(state_values)

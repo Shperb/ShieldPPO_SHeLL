@@ -22,6 +22,10 @@ import numpy as np
 import highway_env
 
 import constants
+import ppo_original
+import ppo_original_gal
+import ppo_original_gal_new
+import ppo_shieldLSTM
 # from SafetyRulesParser import SafetyRulesParser
 from ppo_shieldLSTM import PPO, ShieldPPO, RuleBasedShieldPPO, PPOCostAsReward, Shield, device
 from gym import spaces, register
@@ -145,7 +149,10 @@ class EnvsWrapper(gym.Wrapper):
 class PixelEnvWrapper(EnvsWrapper):
     def __init__(self, envs, has_continuous_action_space=False, seed=46456, no_render=False):
         super().__init__(envs, has_continuous_action_space, seed, no_render)
-        self.pixel_env = PixelObservationWrapper(envs[0], pixels_only=True)
+        try:
+            self.pixel_env = PixelObservationWrapper(envs[0], pixels_only=True)
+        except Exception as e:
+            print(e)
         self.size = (constants.CP_IMAGE_WIDTH, constants.CP_IMAGE_HEIGHT)
         self.pixel_env.observation_space = gym.spaces.Box(low=0, high=255, shape=(self.size[0], self.size[1], 3), dtype=np.uint8)
         self.state_dim = np.prod(self.pixel_env.observation_space.shape)
@@ -167,6 +174,9 @@ class PixelEnvWrapper(EnvsWrapper):
         obs = self.pixel_env.reset()
         # obs = obs['pixels']
         return self.observation(obs), obs
+
+    def render(self):
+        return None
 
     def observation(self, obs):
         pixels = obs['pixels']
@@ -277,10 +287,23 @@ def train(args, env_name):
     with open(save_args_path, 'w') as f:
         json.dump(args.__dict__, f, indent=2)
 
-    shield = Shield.get_shield(action_dim, has_continuous_action_space, folder_name)
-    ppo_agent = ShieldPPO(shield, obs_type, multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
-                          has_continuous_action_space, action_std, masking_threshold=masking_threshold,
-                          k_last_states=k_last_states, safety_threshold=safety_threshold)
+    # shield = Shield.get_shield(action_dim, has_continuous_action_space, folder_name)
+    # ppo_agent = ShieldPPO(shield, obs_type, multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+    #                       has_continuous_action_space, action_std, masking_threshold=masking_threshold,
+    #                       k_last_states=k_last_states, safety_threshold=safety_threshold)
+
+    # ppo_agent = ppo_original_gal.PPO(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+    #                                  has_continuous_action_space, action_std, k_last_states)
+
+    ppo_agent = ppo_original.PPO(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+                                 has_continuous_action_space, action_std)
+
+    # ppo_agent = ppo_original.ShieldPPO(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+    #                                    has_continuous_action_space)
+
+    # ppo_agent = ppo_original_gal_new.PPO(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip,
+    #                                      has_continuous_action_space, action_std)
+
     time_step = 0
     i_episode = 0
     time_steps = []
@@ -295,6 +318,8 @@ def train(args, env_name):
     start_time = time.time()
     amount_of_done = 0
     num_of_collisions = 0
+    print_running_reward = 0
+    print_running_episodes = 0
     # training loop
     while time_step <= max_training_timesteps:
         # NEW EPOCH / EPISODE (defined by i_episode) - EACH EPISODE STARTS WITH A NEW STATE
@@ -312,6 +337,8 @@ def train(args, env_name):
         current_ep_reward = 0
         current_ep_cost = 0
         current_ep_len = 0
+        log_running_reward = 0
+        log_running_episodes = 0
         is_mistake = False
         if args.record_mistakes:
             base_video_path = f"./{base_path}/Videos"
@@ -321,12 +348,15 @@ def train(args, env_name):
             video_recorder = VideoRecorder(multi_task_env.env, base_path=video_path, enabled=video_path is not None)
         for t in range(1, max_ep_len + 1):
             # select action with policy
-            # if args.render and not args.no_render:
-            #     multi_task_env.env.render()
+            if args.render and not args.no_render:
+                multi_task_env.env.render()
             prev_prev_states = prev_states.copy()
             prev_states = last_states.copy()
             prev_states_vf = last_states_vf.copy()
-            action, safety_scores, no_safe_action = ppo_agent.select_action(last_states, valid_actions, time_step)
+            # action, safety_scores, no_safe_action = ppo_agent.select_action(last_states, valid_actions, time_step)
+            # action = ppo_agent.select_action(last_states, valid_actions, time_step)
+            action = ppo_agent.select_action(state)
+            # action = ppo_agent.select_action(last_states)
             #    print("the selected action is", action)
             state, reward, done, info, state_vf = multi_task_env.step(action)
             last_states.append(state)
@@ -341,8 +371,8 @@ def train(args, env_name):
             # Error Diffusion - "no safe action according to shield"
             # in this case we assume that it happens because there are no safe actions from the given state,
             # so we want to teach the agent that the prev state and the action that led to the current state is a bad example for shield buffer.
-            if len(prev_prev_states) > 0 and time_step >= args.pos_to_neg_threshold and no_safe_action and last_added_to_buffer == 1:
-                ppo_agent.move_last_pos_to_neg()
+            # if len(prev_prev_states) > 0 and time_step >= args.pos_to_neg_threshold and no_safe_action and last_added_to_buffer == 1:
+            #         ppo_agent.move_last_pos_to_neg()
             if args.record_mistakes:
                 video_recorder.capture_frame()
             # Adding only one reward to the buffer
@@ -364,11 +394,11 @@ def train(args, env_name):
                 shield_loss_timesteps.append(time_step)
                 shield_losses.append(shield_loss)
             # cost - the real label of the action
-            if info["cost"] > 0:
-                num_of_collisions += 1
-                print(f"##### COLLISION {num_of_collisions} in {env_name} !!! :( ##### {time_step}")
-                collision_info[time_step] = (i_episode, t, prev_states_vf, safety_scores, no_safe_action, action)
-                is_mistake = True
+            # if info["cost"] > 0:
+            #     num_of_collisions += 1
+            #     print(f"##### COLLISION {num_of_collisions} in {env_name} !!! :( ##### {time_step}")
+            #     collision_info[time_step] = (i_episode, t, prev_states_vf, safety_scores, no_safe_action, action)
+            #     is_mistake = True
             if type(ppo_agent) == ShieldPPO or type(ppo_agent) == RuleBasedShieldPPO:
                 # PADDING - for less than k_last_states states the list of states will be padded with dummy states (zero)
                 if len(prev_states) < k_last_states:
@@ -398,8 +428,7 @@ def train(args, env_name):
 
             # log in logging file
             if time_step % log_freq == 0:
-                cumulative_costs = np.cumsum(np.array(costs))
-                print("########################## saving stats to log ##########################")
+                # print("########################## saving stats to log ##########################")
                 torch.save((time_steps, rewards, costs, tasks, time.time() - start_time, episodes_len, amount_of_done), save_stats_path)
                 torch.save((shield_loss_timesteps, shield_losses), shield_loss_stats_path)
 
@@ -413,15 +442,16 @@ def train(args, env_name):
                         f"Episode : {i_episode:4d} Reward {recent_reward:6.2f} Cost {recent_cost:6.2f} Shield Loss {recent_shield_loss:6.2f} Time {(time.time() - start_time) / 60:.2f} min")
                 else:
                     print(
-                        f"Episode : {i_episode:4d} Reward {recent_reward:6.2f} Cost {recent_cost:6.2f} Time {(time.time() - start_time) / 60:.2f} min")
+                        f"Episode : {i_episode:4d} Reward {recent_reward:6.2f} Cost {recent_cost:6.2f} Time {(time.time() - start_time) / 60:.2f} min Timestep {time_step}")
 
             # save model weights
-            if time_step % save_model_freq == 0:
-                ppo_agent.save(save_model_path, save_shield_path)
+            # if time_step % save_model_freq == 0:
+            #     ppo_agent.save(save_model_path, save_shield_path)
             # THE EPOCH FINISHES IF DONE == TRUE (REACHED TO FINAL STATE) OR REACHED TO MAX_EP_LEN
             if done:
                 amount_of_done += 1
                 break
+
         # IN THE END OF EACH EPOCH
         rewards.append(current_ep_reward)
         costs.append(current_ep_cost)

@@ -23,7 +23,7 @@ class CartPoleWithCost(CartPoleEnv):
     def _cost(self, state):
         pole_angle = state[2]
         cart_position = state[0]
-        return 1 if abs(pole_angle) >= 0.2095 or abs(cart_position) >= 2.4 else 0
+        return 1 if abs(pole_angle) >= self.theta_threshold_radians or abs(cart_position) >= self.x_threshold else 0
 
 
 class HighwayEnvFastNoNormalization(HighwayEnvFast):

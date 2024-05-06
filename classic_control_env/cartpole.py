@@ -10,6 +10,8 @@ from gym import spaces, logger
 from gym.utils import seeding
 import numpy as np
 
+import constants
+
 
 class CartPoleEnv(gym.Env):
     """
@@ -136,16 +138,16 @@ class CartPoleEnv(gym.Env):
         return np.array(self.state)
 
     def render(self, mode='human'):
-        screen_width = 600
-        screen_height = 400
-
-        world_width = self.x_threshold * 2
+        scale_factor = constants.SCALE_FACTOR
+        screen_width = constants.CP_IMAGE_WIDTH
+        screen_height = constants.CP_IMAGE_HEIGHT
+        world_width = self.x_threshold * 2 / scale_factor
         scale = screen_width / world_width
-        carty = 100  # TOP OF CART
-        polewidth = 10.0
-        polelen = scale * (2 * self.length)
-        cartwidth = 50.0
-        cartheight = 30.0
+        carty = 100 // scale_factor  # TOP OF CART
+        polewidth = 10.0 / scale_factor
+        polelen = scale * (2 * self.length) / scale_factor
+        cartwidth = 50.0 / scale_factor
+        cartheight = 30.0 / scale_factor
 
         if self.viewer is None:
             from gym.envs.classic_control import rendering

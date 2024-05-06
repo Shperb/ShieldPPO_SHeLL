@@ -4,13 +4,35 @@ from highway_env.envs import HighwayEnvFast, HighwayEnv, IntersectionEnv, Rounda
 from highway_env.vehicle.controller import ControlledVehicle
 import constants
 from classic_control_env.cartpole import CartPoleEnv
+from box2d_env.car_racing import CarRacing, SCALE, PLAYFIELD
+
+
+class CarRacingImageWithCost(CarRacing):
+    def __init__(self):
+        super().__init__()
+
+    def cost(self, state):
+        # Check if all tiles have been visited
+        if self.tile_visited_count == len(self.track) or self.new_lap:
+            return 1
+
+        # Check if the car is out of bounds
+        x, y = self.car.hull.position
+
+        # print(f"x: {x}, y: {y}, abs_x: {abs(x)}, abs_y: {abs(y)}, PLAYFIELD: {PLAYFIELD}")
+        if abs(x) > PLAYFIELD or abs(y) > PLAYFIELD:
+            print("Now")
+            return 1
+
+        # If neither condition is met, the episode has not terminated
+        return 0
 
 
 class CartPoleImageWithCost(CartPoleEnv):
     def __init__(self):
         super().__init__()
 
-    def _cost(self, state):
+    def cost(self, state):
         pole_angle = state[2]
         cart_position = state[0]
         return 1 if abs(pole_angle) >= 0.2095 or abs(cart_position) >= 2.4 else 0
@@ -20,7 +42,17 @@ class CartPoleWithCost(CartPoleEnv):
     def __init__(self):
         super().__init__()
 
-    def _cost(self, state):
+    def cost(self, state):
+        pole_angle = state[2]
+        cart_position = state[0]
+        return 1 if abs(pole_angle) >= self.theta_threshold_radians or abs(cart_position) >= self.x_threshold else 0
+
+
+class CartPoleWithCostMult(CartPoleEnv):
+    def __init__(self):
+        super().__init__()
+
+    def cost(self, state):
         pole_angle = state[2]
         cart_position = state[0]
         return 1 if abs(pole_angle) >= self.theta_threshold_radians or abs(cart_position) >= self.x_threshold else 0
@@ -40,7 +72,7 @@ class HighwayEnvFastNoNormalization(HighwayEnvFast):
             "observation": {
                 "normalize": False,
                 "type": "Kinematics",
-                "vehicles_count": 10,
+                "vehicles_count": constants.VEHICLE_COUNT,
                 "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
             },
             "duration": 50,
@@ -49,7 +81,35 @@ class HighwayEnvFastNoNormalization(HighwayEnvFast):
         })
         return cfg
 
-    def _cost(self, action: int) -> float:
+    def cost(self, action: int) -> float:
+        """The constraint signal is the occurrence of collisions."""
+        return float(self.vehicle.crashed)
+
+
+class HighwayEnvFastNoNormalizationMult(HighwayEnvFast):
+    """
+    A variant of highway-v0 with faster execution:
+        - lower simulation frequency
+        - fewer vehicles in the scene (and fewer lanes, shorter episode duration)
+        - only check collision of controlled vehicles with others
+    """
+    @classmethod
+    def default_config(cls) -> dict:
+        cfg = super().default_config()
+        cfg.update({
+            "observation": {
+                "normalize": False,
+                "type": "Kinematics",
+                "vehicles_count": constants.VEHICLE_COUNT,
+                "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
+            },
+            "duration": 50,
+            "vehicles_count": 5,
+            "vehicles_density": 2,
+        })
+        return cfg
+
+    def cost(self, action: int) -> float:
         """The constraint signal is the occurrence of collisions."""
         return float(self.vehicle.crashed)
 
@@ -75,7 +135,7 @@ class HighwayEnvFastNoNormalizationOccupancyGrid(HighwayEnvFast):
         })
         return cfg
 
-    def _cost(self, action: int) -> float:
+    def cost(self, action: int) -> float:
         """The constraint signal is the occurrence of collisions."""
         return float(self.vehicle.crashed)
 
@@ -102,7 +162,7 @@ class HighwayEnvFastNoNormalizationGrayscale(HighwayEnvFast):
         })
         return cfg
 
-    def _cost(self, action: int) -> float:
+    def cost(self, action: int) -> float:
         """The constraint signal is the occurrence of collisions."""
         return float(self.vehicle.crashed)
 

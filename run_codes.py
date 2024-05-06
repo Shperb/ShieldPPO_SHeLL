@@ -1,3 +1,4 @@
+import json
 import os
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,7 +15,7 @@ else:
     print("Device set to : cpu")
 
 
-fig, axs = plt.subplots(1, 2, figsize=(16, 6))  # Adjust figsize as needed
+fig, axs = plt.subplots(1, 3, figsize=(16, 6))  # Adjust figsize as needed
 
 
 def smooth(x, window_size=200):
@@ -27,41 +28,84 @@ def smooth(x, window_size=200):
 
 
 def plot_rewards(ax, df, obs):
-    ax.plot(df[0], smooth(df[1], 50))
+    ax.plot(df[0], smooth(df[1], 1000), label=obs)  # 500
     ax.set_xlabel('Time Step')
     ax.set_ylabel('Avg Episodic Reward')
-    ax.set_title(f'{obs} Observation')
+    # ax.set_title(f'{obs} Observation')
+    ax.set_title(f'Rewards Graph')
 
 
 def plot_collisions(ax, df, obs):
-    ax.plot(df[0], smooth(df[2]))
+    ax.plot(df[0], smooth(df[2], 1000))
     ax.set_xlabel('Time Step')
     ax.set_ylabel('Collisions')
-    ax.set_title(f'{obs} Observation')
+    ax.set_title(f'Collisions Graph')
 
 
 def plot_shield_loss_new(ax, df, obs):
-    ax.plot(df[0], smooth(df[1], 5))
+    ax.plot(df[0], smooth(df[1], 10), label=obs)  # 10
     ax.set_xlabel('Time Step')
     ax.set_ylabel('Shield Loss')
-    ax.set_title(f'{obs} Observation')
+    ax.set_title(f'Shield Loss Graph')
 
 
-def plot_kinematics(paths, obs):
-    for folder_path in paths:
+def plot_runs_old(paths):
+    plots = ["Solo", "Multi", "Multi"]
+    # for folder_path in paths:
+    for folder_path, p in zip(paths, plots):
         stats = torch.load(f"{folder_path}/stats.log", map_location=torch.device(device))
-        # shield_loss_stats_df = torch.load(f"{folder_path}/shield_loss_stats.log", map_location=torch.device(dev))
+        shield_loss_stats_df = torch.load(f"{folder_path}/shield_loss_stats.log", map_location=torch.device(device))
+        # observation = folder_path.split('/')[3].split('_')[0]  # Kinematics or Camera
+        observation = p
+        plot_collisions(axs[0], stats, observation)
+        plot_rewards(axs[1], stats, observation)
+        plot_shield_loss_new(axs[2], shield_loss_stats_df, observation)
+    axs[0].legend()
+    axs[1].legend()
+    axs[2].legend()
+    # Save and show the combined plot
+    # plt.savefig(f"models/CartPole_stats/shield_check/all.png")
+    plt.savefig(f"{folder_path}/{observation}.png")
+    plt.show()
 
-        plot_collisions(axs[0], stats, obs)
-        plot_rewards(axs[1], stats, obs)
-        # plot_shield_loss_new(axs[2], shield_loss_stats_df, obs)
+
+def plot_runs(paths, plots):
+    # for folder_path in paths:
+    for folder_path, p in zip(paths, plots):
+        stats = get_stats_from_log_files(folder_path, 'stats')
+        shield_log_stats = get_stats_from_log_files(folder_path, 'shield_loss_stats')
+        observation = p
+        plot_collisions(axs[0], stats, observation)
+        plot_rewards(axs[1], stats, observation)
+        plot_shield_loss_new(axs[2], shield_log_stats, observation)
 
     axs[0].legend()
     axs[1].legend()
+    axs[2].legend()
 
     # Save and show the combined plot
-    plt.savefig(f"{folder_path}/all.png")
+    # plt.savefig(f"models/CartPole_stats/shield_check/all.png")
+    plt.savefig(f"{folder_path}/{observation}.png")
     plt.show()
+
+
+def get_stats_from_log_files(folder_path, starts_with):
+    stats = tuple()
+    log_files = [file for file in os.listdir(folder_path) if file.startswith(starts_with) and file.endswith('.json')]
+    for i in range(1, len(log_files) + 1):
+        file_path = f'{folder_path}/{starts_with}{i}.json'
+        with open(file_path, 'r') as f:
+            current_stats = tuple(json.load(f))
+
+        if i == 1:
+            stats = stats + current_stats
+        else:
+            stats = [list1 + list2 for list1, list2 in zip(stats, current_stats)]
+        print(i)
+        if i == 5:
+            break
+
+    return stats
 
 
 def find_latest_edited_folder(directory, k=1):
@@ -79,22 +123,27 @@ def find_latest_edited_folder(directory, k=1):
     return [f.replace('\\', '/') for f in sorted_folders[:k]]  # Select the top k folders
 
 
-def plot_last_runs(stats_type, obs, k=1):
-    paths = find_latest_edited_folder(f"models/{stats_type}_stats", k)
-    plot_kinematics(paths, obs)
+def plot_last_runs(stats_type, k=1):
+    paths = find_latest_edited_folder(f"models/{stats_type}_stats/", k)
+    plots = ["kinMult", "kinMult", "kin", "occuMult"]
+    plot_runs(paths, plots)
 
 
-def plot_paths(stats_type, obs):
+def plot_paths(stats_type):
     folder = "models/{}_stats/{}"
-    paths = ["Kinematics_20240111-144135", "Kinematics_20240111-145554"]
+    # paths = ["Occupancy_20240229-095527_HighwayEnvFastNoNormalizationOccupancyGrid-v0", "Occupancy_20240229-095540_HighwayEnvFastNoNormalizationOccupancyGrid-v0", "Kinematics_20240229-095540_HighwayEnvFastNoNormalization-v0", "Kinematics_20240229-095528_HighwayEnvFastNoNormalization-v0"]
+    paths = ["Occupancy_20240418-165120_HighwayEnvFastNoNormalizationOccupancyGrid-v0", "Kinematics_20240418-165120_HighwayEnvFastNoNormalization-v0", "Occupancy_20240418-165145_HighwayEnvFastNoNormalizationOccupancyGrid-v0", "Kinematics_20240418-165138_HighwayEnvFastNoNormalization-v0"]
+
     paths = [folder.format(stats_type, p) for p in paths]
-    plot_kinematics(paths, obs)
+    plots = ["occumult", "kinmult", "occu", "kin"]
+    plot_runs(paths, plots)
 
 
-# obs = "Camera"
-obs = "Kinematics"
-stats_type = 'CartPole'
-# stats_type = 'Highway'
+obs = "Camera"
+# obs = "Kinematics"
+# stats_type = 'CartPole'
+stats_type = 'Highway'
+# stats_type = 'CarRacing'
 
-plot_last_runs(stats_type, obs, 3)
-# plot_paths(stats_type, obs)
+# plot_last_runs(stats_type, 3)
+plot_paths(stats_type)

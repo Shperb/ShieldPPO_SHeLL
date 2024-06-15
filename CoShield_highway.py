@@ -15,31 +15,27 @@ from gym.wrappers import ResizeObservation
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
 from gym.wrappers.pixel_observation import PixelObservationWrapper
 from highway_env.envs import HighwayEnvFast, MergeEnv
-# import tensorflow as tf
 # import safe_rl
-from torch.distributions import MultivariateNormal
-from torch.distributions import Categorical
 import numpy as np
-import highway_env
-
 import constants
-import ppo_original
 # from SafetyRulesParser import SafetyRulesParser
-from ppo_shield import PPO, device, ShieldPPO, Shield
-from ppo_shieldLSTM import RuleBasedShieldPPO
+from CoShield_ppo import ShieldPPO, Shield, device
+from ppo_shield import PPO
 from gym import spaces, register
 import sys
 import threading
 from encoders import ObservationType
-import cv2
-
-# from xvfbwrapper import Xvfb
-
-# Start virtual display
-# vdisplay = Xvfb()
-# vdisplay.start()
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# set device to cpu or cuda
+if torch.cuda.is_available():
+    device = torch.device('cuda:0')
+    torch.cuda.empty_cache()
+    print("Device set to : " + str(torch.cuda.get_device_name(device)))
+else:
+    device = torch.device('cpu')
+    print("Device set to : cpu")
 
 
 class Wrapper(gym.Wrapper):
@@ -205,7 +201,7 @@ def register_envs(envs):
         register(
             id=env,
             entry_point='envs:' + entry,
-            max_episode_steps=200,  # CHANGED
+            max_episode_steps=400,  # CHANGED
         )
 
 
@@ -218,12 +214,10 @@ def train(args, env_name, env_idx):
     each iteration in the inner loop is a new episodes (sequence of actions) and the number of actions is limited due to max_timesteps
     trajectory - sequence of (state,action) pairs that the agent encounters during its interaction with the environment within a single episode.
     """
-
     obs_name, obs_type, folder_name = get_env_obs(env_name)
-
     has_continuous_action_space = False
     safety_threshold = args.safety_threshold
-    max_ep_len = args.max_ep_len  # max timesteps in one episode
+    max_ep_len = 200 if 'CartPole' in env_name else 400  # max timesteps in one episode
     max_training_timesteps = args.max_training_timesteps  # break training loop if timeteps > max_training_timesteps
     # print_freq = max_ep_len * 4     # print avg reward in the interval (in num timesteps)
     # log_freq = max_ep_len * 2       # log avg reward in the interval (in num timesteps)
@@ -248,7 +242,11 @@ def train(args, env_name, env_idx):
     lr_critic = args.lr_critic  # learning rate for critic network [1e-4, 5e-4, 1e-3]
     seed = args.seed
     envs = [env_name]
-    register_envs(envs)
+
+    registered_envs = gym.envs.registry.all()
+    if env_name not in [x.id for x in registered_envs]:
+        register_envs(envs)
+
     env_list = [gym.make(x) for x in envs]
     if 'CartPoleImage' in env_name:
         for e in env_list:
@@ -263,11 +261,12 @@ def train(args, env_name, env_idx):
             env.metadata["video.frames_per_second"] = 30
             env.metadata["video.output_frames_per_second"] = 30
     action_dim = multi_task_env.action_space_size()
+
     if args.no_render:
         print("Rendering is disabled")
     else:
         print("Rendering is enabled")
-    #### create new log file for each run
+
     test_name = args.test_name
     curr_time = datetime.now().strftime("%Y%m%d-%H%M%S")
     base_path = f"./models/{folder_name}/{test_name}_{seed}_{curr_time}/{obs_name}{env_idx}_CO"
@@ -289,16 +288,17 @@ def train(args, env_name, env_idx):
         json.dump(args.__dict__, f, indent=2)
 
     action_std = args.action_std  # 0.15 0.9
-
-    # shield = Shield.get_shield(action_dim, has_continuous_action_space, folder_name)
-    # ppo_agent = ShieldPPO(shield, obs_type, multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, k_epochs_shield, eps_clip,
-    #                          has_continuous_action_space, action_std, masking_threshold, safety_threshold)
+    shield_gamma = args.shield_gamma
+    shield = Shield.get_shield(action_dim, has_continuous_action_space, folder_name)
+    ppo_agent = ShieldPPO(shield, obs_type, multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, k_epochs_shield, eps_clip,
+                          has_continuous_action_space, action_std, masking_threshold, safety_threshold, shield_gamma)
     # ppo_agent = ShieldPPO(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, k_epochs_shield, eps_clip,
     #                       has_continuous_action_space, action_std, 1000000, safety_threshold)
-    ppo_agent = PPO(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, eps_clip,
-                    has_continuous_action_space, obs_type, action_std)
+    # ppo_agent = PPO(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, eps_clip,
+    #                 has_continuous_action_space, obs_type, action_std)
     # ppo_agent = ppo_original.ShieldPPO(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, eps_clip,
     #                                    has_continuous_action_space, action_std)
+    # ppo_agent = DQN(multi_task_env.state_dim, action_dim, lr=1e-3, gamma=0.99, eps_start=1.0, eps_end=0.01, eps_decay=0.995)
 
     time_step = 0
     i_episode = 0
@@ -310,18 +310,10 @@ def train(args, env_name, env_idx):
     collision_info = {}
     costs = []
     shield_losses = []
-    stats = []
-    start_time = time.time()
     amount_of_done = 0
-    num_of_collisions = 0
-    # print_running_reward = 0
-    # print_running_episodes = 0
-    # log_running_reward = 0
-    # log_running_episodes = 0
+
     # training loop
     while time_step <= max_training_timesteps:
-        # NEW EPOCH / EPISODE (defined by i_episode) - EACH EPISODE STARTS WITH A NEW STATE
-        # print("Current time_step is ", time_step)
         state = multi_task_env.reset()
         task_name = multi_task_env.get_current_env_name()
         if 'Highway' in env_name:
@@ -333,10 +325,10 @@ def train(args, env_name, env_idx):
             valid_actions = [0, 1, 2, 3, 4]  # for CarRacing
         trajectory = collections.deque([state])
         recorder_closed = False
-        # INITIALIZE THE REWARDS & COSTS (CUMULATIVE)
         current_ep_reward = 0
         current_ep_cost = 0
         current_ep_len = 0
+        shield_epoch_trajectory = []  # for Shield Buffer
         is_mistake = False
         if args.record_mistakes:
             base_video_path = f"./{base_path}/Videos"
@@ -345,29 +337,32 @@ def train(args, env_name, env_idx):
             trajectory_path = f"{base_video_path}/episode_" + str(i_episode) + "_trajectory.txt"
             video_recorder = VideoRecorder(multi_task_env.env, base_path=video_path, enabled=video_path is not None)
         for t in range(1, max_ep_len + 1):
-            # select action with policy
             if args.render and not args.no_render:
                 multi_task_env.env.render()
             if type(ppo_agent) == ShieldPPO:
                 action, no_safe_action = ppo_agent.select_action(state, valid_actions, time_step)
             else:
                 action = ppo_agent.select_action(state)
-            prev_state = state
             state, reward, done, info, state_vf = multi_task_env.step(action)
             trajectory.appendleft((action, state))
             if len(trajectory) > args.record_trajectory_length:
                 trajectory.pop()
-            # if type(ppo_agent) == ShieldPPO and t > 1 and time_step >= args.pos_to_neg_threshold and no_safe_action and last_added_to_buffer == 1:
-            #     ppo_agent.move_last_pos_to_neg()
             if args.record_mistakes:
                 video_recorder.capture_frame()
-            # Adding only one reward to the buffer
-            ppo_agent.buffer.rewards.append(reward)
-            ppo_agent.buffer.costs.append(info['cost'])
+
+            cost = info['cost']  # the real label of the action
+            ppo_agent.buffer.rewards.append(reward)  # Adding only one reward to the buffer
+            ppo_agent.buffer.costs.append(cost)
             ppo_agent.buffer.is_terminals.append(done)
+
             time_step += 1
             current_ep_reward += reward
-            current_ep_cost += info['cost']
+            current_ep_cost += cost
+
+            # convert state and action to tensors and add to current trajectory
+            t_state = torch.FloatTensor(state).to(device)
+            t_action = torch.tensor([action]).to(device)
+            shield_epoch_trajectory.append((t_state, t_action, cost, done))
 
             # update PPO agent
             if time_step % update_timestep == 0:
@@ -379,20 +374,14 @@ def train(args, env_name, env_idx):
                 shield_loss_timesteps.append(time_step)
                 shield_losses.append(shield_loss)
 
-            if type(ppo_agent) == ShieldPPO or type(ppo_agent) == RuleBasedShieldPPO:
-                if info["cost"] > 0:
-                    # Collision
-                    if args.record_mistakes:
-                        video_recorder.close()
-                        recorder_closed = True
-                        with open(trajectory_path, 'w') as f:
-                            for item in reversed(trajectory):
-                                f.write(f"{item}\n")
-                    last_added_to_buffer = 0
-                    ppo_agent.add_to_shield(prev_state, action, 0, obs_type)
-                else:
-                    last_added_to_buffer = 1
-                    ppo_agent.add_to_shield(prev_state, action, 1, obs_type)
+            if info["cost"] > 0:
+                # Collision
+                if args.record_mistakes:
+                    video_recorder.close()
+                    recorder_closed = True
+                    with open(trajectory_path, 'w') as f:
+                        for item in reversed(trajectory):
+                            f.write(f"{item}\n")
 
             # if continuous action space; then decay action std of ouput action distribution
             if has_continuous_action_space and time_step % action_std_decay_freq == 0:
@@ -400,8 +389,6 @@ def train(args, env_name, env_idx):
 
             # log in logging file
             if time_step % log_freq == 0:
-                # torch.save((time_steps, rewards, costs, time.time() - start_time, episodes_len, amount_of_done), save_stats_path)
-                # torch.save((shield_loss_timesteps, shield_losses), shield_loss_stats_path)
                 with open(save_stats_path, 'w') as f:
                     json.dump((time_steps, rewards, costs, episodes_len), f)
                 with open(shield_loss_stats_path, 'w') as f:
@@ -420,31 +407,22 @@ def train(args, env_name, env_idx):
 
             # printing average reward
             if time_step % int(print_freq) == 0:
-                # print_avg_reward = print_running_reward / print_running_episodes
-                # print_avg_reward = round(print_avg_reward, 2)
-
                 recent_reward = np.array(rewards[max(0, len(rewards) - 10):]).mean()
                 recent_cost = np.array(costs[max(0, len(costs) - 10):]).mean()
                 print(f"Obs: {obs_name}  Episode: {i_episode}  Reward: {recent_reward:0.2f}  Cost: {recent_cost:0.2f}  Timestep: {time_step}, Timestamp: {datetime.now()}")
-                # print(np.array(rewards).mean())
-                # print(recent_reward)
-                # print_running_reward = 0
-                # print_running_episodes = 0
 
             # save model weights
             # if time_step % save_model_freq == 0:
             #     ppo_agent.save(save_model_path, save_shield_path)
+
             current_ep_len += 1
             if done:
                 amount_of_done += 1
                 break
 
         # IN THE END OF EACH EPOCH
-        # print_running_reward += current_ep_reward
-        # print_running_episodes += 1
-        #
-        # log_running_reward += current_ep_reward
-        # log_running_episodes += 1
+        if type(ppo_agent) == ShieldPPO:
+            ppo_agent.add_to_shield(shield_epoch_trajectory)
 
         rewards.append(current_ep_reward)
         costs.append(current_ep_cost)
@@ -463,9 +441,7 @@ def train(args, env_name, env_idx):
                         f.write("%s\n" % item)
         # i_episodes = counts the amount of episodes
         i_episode += 1
-    end_time = time.time()
-    total_training_time = end_time - start_time
-    # torch.save((time_steps, rewards, costs, tasks, total_training_time, episodes_len, amount_of_done), save_stats_path)
+
     with open(save_stats_path, 'w') as f:
         json.dump((time_steps, rewards, costs, episodes_len), f)
     with open(shield_loss_stats_path, 'w') as f:
@@ -522,11 +498,11 @@ def get_args():
                         help="print avg reward in the interval (in num timesteps)")
     parser.add_argument("--seed", type=int, default=1,
                         help="random seed (default: 1)")
-    parser.add_argument("--log_freq", type=int, default=20000,
+    parser.add_argument("--log_freq", type=int, default=10000,
                         help="log avg reward in the interval (in num timesteps)")
     parser.add_argument("--save_model_freq", type=int, default=int(5e4),
                         help="save model frequency (in num timesteps)")
-    parser.add_argument("--k_epochs_shield", type=int, default=30,
+    parser.add_argument("--k_epochs_shield", type=int, default=25,
                         help="update Shield for K epochs")
     parser.add_argument("--k_epochs_ppo", type=int, default=30,
                         help="update policy for K epochs")
@@ -534,6 +510,8 @@ def get_args():
                         help="clip parameter for PPO")
     parser.add_argument("--gamma", type=float, default=0.99,
                         help="discount factor")
+    parser.add_argument("--shield_gamma", type=float, default=0.6,
+                        help="shield discount factor")
     parser.add_argument("--lr_actor", type=float, default=5e-5,
                         help="learning rate for actor network")
     parser.add_argument("--lr_critic", type=float, default=5e-5,
@@ -553,13 +531,13 @@ def get_args():
     parser.add_argument("--action_std", type=float, default=0.6,
                         help="action std for PPO")
     parser.add_argument("--test_name", type=str, default="",
-                        help="name for folder to save the results and model")
+                        help="action std for PPO")
     # Shira - New Arguments
     parser.add_argument("--masking_threshold", type=int, default=0, help="Time step at which to start using the shield")
     parser.add_argument("--pos_to_neg_threshold", type=int, default=300000, help="Time step at which to start using the shield")
     parser.add_argument("--no_render", action="store_true", help="Disable rendering during simulation")
-    parser.add_argument("--safety_threshold", type=float, default=0.05, help="safety_threshold")  # 0.5
-    parser.add_argument("--batch_size", type=float, default=1024, help="Batch size to sample from buffer while updating shield")
+    parser.add_argument("--safety_threshold", type=float, default=0.6, help="safety_threshold")  # 0.5
+    parser.add_argument("--batch_size", type=float, default=128, help="Batch size to sample from buffer while updating shield")
     return parser.parse_args()
 
 

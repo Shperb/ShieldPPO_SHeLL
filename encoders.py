@@ -62,8 +62,17 @@ class CameraEncoder(nn.Module):
         return self.norm(self.output(x))
 
     def encode(self, states):
-        batch_size = states.size(0)
-        encoded_states = self.forward(states.view(batch_size, self.channels, self.w, self.h)).view(batch_size, feature_dim)
+        if len(states.shape) > 1:
+            batch_size = states.size(0)
+            states = states.view(batch_size, self.channels, self.w, self.h)
+            encoded_states = self.forward(states)
+            encoded_states = encoded_states.view(batch_size, feature_dim)
+        else:
+            batch_size = 1
+            states = states.view(batch_size, self.channels, self.w, self.h)
+            encoded_states = self.forward(states)
+            encoded_states = encoded_states.view(-1)
+        # encoded_states = self.forward(states.view(batch_size, self.channels, self.w, self.h)).view(batch_size, feature_dim)
         return encoded_states
 
 
@@ -73,23 +82,23 @@ class KinematicsEncoder(nn.Module):
         self.input_size = input_size
 
         # for CartPole
-        self.net = nn.Sequential(
-            nn.Linear(input_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, feature_dim),
-        ).to(device)
-
-        self.optimizer = optim.Adam(self.parameters(), lr=5e-4)  # Learning rate is set to 0.001
-        self.loss_fn = nn.MSELoss()
+        # self.net = nn.Sequential(
+        #     nn.Linear(input_size, 64),
+        #     nn.ReLU(),
+        #     nn.Linear(64, feature_dim),
+        # ).to(device)
 
         # for Highway
-        # self.net = nn.Sequential(
-        #     nn.Linear(input_size, 128),
-        #     nn.ReLU(),
-        #     nn.Linear(128, 256),
-        #     nn.ReLU(),
-        #     nn.Linear(256, feature_dim),
-        # ).to(device)
+        self.net = nn.Sequential(
+            nn.Linear(input_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 256),
+            nn.ReLU(),
+            nn.Linear(256, feature_dim),
+        ).to(device)
+
+        # self.optimizer = optim.Adam(self.parameters(), lr=5e-4)  # Learning rate is set to 0.001
+        # self.loss_fn = nn.MSELoss()
 
     def forward(self, x):
         return self.net(x)
@@ -126,6 +135,8 @@ class OccupancyGridEncoder(nn.Module):
         return self.net(x)
 
     def encode(self, states):
+        if len(states.shape) == 1:
+            states = states.unsqueeze(0)
         return self.forward(states)
 
 

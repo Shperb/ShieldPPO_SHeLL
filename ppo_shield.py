@@ -344,7 +344,6 @@ class PPO:
         print("--------------------------------------------------------------------------------------------")
 
     def select_action(self, state):
-
         if self.has_continuous_action_space:
             with torch.no_grad():
                 state = torch.FloatTensor(state).to(device)
@@ -409,7 +408,7 @@ class PPO:
             surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
 
             # final loss of clipped objective PPO
-            loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rewards) - 0.01 * dist_entropy
+            loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rewards) - 0.1 * dist_entropy  # TODO: changed ent coef to 0.1 from 0.01
 
             # take gradient step
             self.optimizer.zero_grad()
@@ -587,7 +586,7 @@ class ShieldPPO(PPO):  # currently only discrete action
             # print(f"Positive samples: {len(self.shield.shield_buffer.pos_rb)}     Negative samples: {len(self.shield.shield_buffer.neg_rb)}")
             for i in range(self.k_epochs_shield):
                 s_pos, a_pos, s_neg, a_neg = self.shield_buffer.sample(batch_size)
-                # pre_update_params = {name: param.clone() for name, param in self.shield.named_parameters()}
+                pre_update_params = {name: param.clone() for name, param in self.shield.named_parameters()}
                 self.shield_opt.zero_grad()
                 loss = self.shield.loss(s_pos, a_pos, s_neg, a_neg, self.obs_type)
                 loss.backward()

@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-
 # set device to cpu or cuda
 if torch.cuda.is_available():
     device = torch.device('cuda:0')
@@ -13,7 +12,6 @@ if torch.cuda.is_available():
 else:
     device = torch.device('cpu')
     print("Device set to : cpu")
-
 
 fig, axs = plt.subplots(1, 3, figsize=(16, 6))  # Adjust figsize as needed
 
@@ -28,7 +26,7 @@ def smooth(x, window_size=200):
 
 
 def plot_rewards(ax, df, obs):
-    ax.plot(df[0], smooth(df[1], 1000), label=obs)  # 500
+    ax.plot(df[0], smooth(df[1], 5000), label=obs)  # 500
     ax.set_xlabel('Time Step')
     ax.set_ylabel('Avg Episodic Reward')
     # ax.set_title(f'{obs} Observation')
@@ -43,7 +41,7 @@ def plot_collisions(ax, df, obs):
 
 
 def plot_shield_loss_new(ax, df, obs):
-    ax.plot(df[0], smooth(df[1], 10), label=obs)  # 10
+    ax.plot(df[0], smooth(df[1], 20), label=obs)  # 10
     ax.set_xlabel('Time Step')
     ax.set_ylabel('Shield Loss')
     ax.set_title(f'Shield Loss Graph')
@@ -56,6 +54,7 @@ def plot_runs_old(paths):
         stats = torch.load(f"{folder_path}/stats.log", map_location=torch.device(device))
         shield_loss_stats_df = torch.load(f"{folder_path}/shield_loss_stats.log", map_location=torch.device(device))
         # observation = folder_path.split('/')[3].split('_')[0]  # Kinematics or Camera
+
         observation = p
         plot_collisions(axs[0], stats, observation)
         plot_rewards(axs[1], stats, observation)
@@ -74,6 +73,11 @@ def plot_runs(paths, plots):
     for folder_path, p in zip(paths, plots):
         stats = get_stats_from_log_files(folder_path, 'stats')
         shield_log_stats = get_stats_from_log_files(folder_path, 'shield_loss_stats')
+        # index = 0
+        # for i in range(len(stats[0])):
+        #     if stats[0][i] > 500000:
+        #         index = i
+        # stats = [st[index:] for st in stats]
         observation = p
         plot_collisions(axs[0], stats, observation)
         plot_rewards(axs[1], stats, observation)
@@ -124,18 +128,22 @@ def find_latest_edited_folder(directory, k=1):
 
 
 def plot_last_runs(stats_type, k=1):
-    paths = find_latest_edited_folder(f"models/{stats_type}_stats/", k)
-    plots = ["kinMult", "kinMult", "kin", "occuMult"]
+    paths = find_latest_edited_folder(f"models/{stats_type}_stats/occ3kin2_3_20240613-131135/", k)
+    paths.append(f'models/{stats_type}_stats/occu1_3_20240613-213400/Occupancy1_CO')
+    paths.append(f'models/{stats_type}_stats/Occupancy_20240610-183636')
+    plots = ["kin", "kin", "occu", "occu", "occu", 'occureg', 'PPO']
     plot_runs(paths, plots)
 
 
 def plot_paths(stats_type):
     folder = "models/{}_stats/{}"
-    # paths = ["Occupancy_20240229-095527_HighwayEnvFastNoNormalizationOccupancyGrid-v0", "Occupancy_20240229-095540_HighwayEnvFastNoNormalizationOccupancyGrid-v0", "Kinematics_20240229-095540_HighwayEnvFastNoNormalization-v0", "Kinematics_20240229-095528_HighwayEnvFastNoNormalization-v0"]
-    paths = ["Occupancy_20240418-165120_HighwayEnvFastNoNormalizationOccupancyGrid-v0", "Kinematics_20240418-165120_HighwayEnvFastNoNormalization-v0", "Occupancy_20240418-165145_HighwayEnvFastNoNormalizationOccupancyGrid-v0", "Kinematics_20240418-165138_HighwayEnvFastNoNormalization-v0"]
+    paths = ["Occupancy_20240610-183636", "Occupancy_20240609-141931_CO"]
+    # paths = ["Occupancy_20240609-141120_CO", "Occupancy_20240609-141931_CO"]
+    # paths = ["Occupancy_20240609-141931_CO"]
 
     paths = [folder.format(stats_type, p) for p in paths]
-    plots = ["occumult", "kinmult", "occu", "kin"]
+    # plots = ["0.01"]
+    plots = ["PPO", "0.01"]
     plot_runs(paths, plots)
 
 
@@ -145,5 +153,5 @@ obs = "Camera"
 stats_type = 'Highway'
 # stats_type = 'CarRacing'
 
-# plot_last_runs(stats_type, 3)
-plot_paths(stats_type)
+plot_last_runs(stats_type, 5)
+# plot_paths(stats_type)

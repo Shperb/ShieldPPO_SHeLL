@@ -12,6 +12,7 @@ from gym.wrappers.monitoring.video_recorder import VideoRecorder
 import torch
 import numpy as np
 from gym import spaces, register
+from utilities.priority_queue import *
 
 # internal
 from ppo import ShieldPPO, PPO
@@ -61,6 +62,19 @@ def get_valid_actions(env):
     return list(range(env.action_space.n))  # returns a vector of values 0/1 which indicate which actions are valid
 
 
+
+def get_episode_samples(episode, shield_gamma):
+    episode_samples = []
+    # reverse iterating through the episode - from end to beginning
+    d_cost = 0
+    for step in zip(reversed(episode)):
+        state, action, cost, is_terminal = step[0]
+        if is_terminal:
+            d_cost = 0
+        d_cost = cost + (shield_gamma * d_cost)
+        d_cost_tensor = torch.tensor(d_cost)
+        episode_samples.insert(0, (state, action, d_cost_tensor))
+    return episode_samples
 
 
 ################################### Training ###################################
@@ -124,8 +138,18 @@ def train(arguments=None):
     parser.add_argument("--unsafe_tresh", type=float, default=0.5, help="Unsafe treshold for the Shield network")
     parser.add_argument("--update_shield_timestep", type=float, default=200,
                         help="Update the shield network each update_shield_timestep time steps")
+    """
     parser.add_argument("--shield_episodes_batch_size", type=float, default=5,
                         help="The number of episdoes from shield buffer while updating Shield")
+    """
+    parser.add_argument("--shield_sample_batch_size", type=float, default=1024,
+                        help="The number of states to sample from shield buffer while updating Shield")
+    # new argument for shield buffer (prioritizied experience replay)
+    parser.add_argument("--shield_buffer_size", type=int, default=5000,
+                        help="maximum amount of samples in shield buffer (prioritizied experience replay buffer)")
+
+
+
 
     # Gen Arguments
     parser.add_argument("--use_gen_v2", type=bool, default=False,
@@ -185,13 +209,14 @@ def train(arguments=None):
 
     # shield
     update_shield_timestep = args.update_shield_timestep
-    shield_episodes_batch_size = args.shield_episodes_batch_size
+    # shield_episodes_batch_size = args.shield_episodes_batch_size
     K_epochs_shield = args.K_epochs_shield
     lr_shield = args.lr_shield
     shield_gamma = args.shield_gamma
     masking_threshold = args.masking_threshold
     unsafe_tresh = args.unsafe_tresh
-
+    shield_buffer_size = args.shield_buffer_size
+    shield_sample_batch_size = args.shield_sample_batch_size
     # gen
     use_gen_v2 = args.use_gen_v2
     K_epochs_gen = args.K_epochs_gen
@@ -277,7 +302,7 @@ def train(arguments=None):
                               has_continuous_action_space=has_continuous_action_space, lr_shield=lr_shield,
                               lr_gen=lr_gen, latent_dim=latent_dim, shield_gamma=shield_gamma,
                               action_std_init=action_std, masking_threshold=masking_threshold,
-                              unsafe_tresh=unsafe_tresh, use_gen_v2 = use_gen_v2, param_ranges=param_ranges)
+                              unsafe_tresh=unsafe_tresh, use_gen_v2 = use_gen_v2,shield_buffer_size = shield_buffer_size,  param_ranges=param_ranges)
 
     else:
         print("Accepting one of the following agents as input - PPO, ShieldPPO, RuleBasedShieldPPO")
@@ -319,9 +344,7 @@ def train(arguments=None):
     use_gen_v1 = True
     if use_gen_v2:
         use_gen_v1 = False
-#    def load(self, checkpoint_path_ac, checkpoint_path_shield, checkpoint_path_gen):
 
-    ppo_agent.load("models/22.06.24_seeds_experiments_gen_v1/model.pth", "models/22.06.24_seeds_experiments_gen_v1/shield.pth", "models/22.06.24_seeds_experiments_gen_v1/gen.pth")
     while time_step <= max_training_timesteps:
         if i_episode >= gen_masking_tresh:
             # using generator to get a generated configuration for env, and the first chosen action
@@ -418,7 +441,7 @@ def train(arguments=None):
 
             # update Shield
             if time_step % update_shield_timestep == 0 and type(ppo_agent) == ShieldPPO:
-                shield_loss = ppo_agent.update_shield(shield_episodes_batch_size)
+                shield_loss = ppo_agent.update_shield(shield_sample_batch_size)
                 shield_losses.append(shield_loss)
                 shield_loss_update_stats[time_step] = (i_episode, t, shield_loss)
                 # TODO - Show Shahaf (22.6)
@@ -494,8 +517,12 @@ def train(arguments=None):
         episodes_len.append(current_ep_len)
 
         if type(ppo_agent) == ShieldPPO:
-            # Save to shield buffer in the end of each episode a list of [(s1,a1,cost1,done1),.............] for all steps in episode
-            ppo_agent.add_to_shield(shield_epoch_trajectory)
+            # old one - Save to shield buffer in the end of each episode a list of [(s1,a1,cost1,done1),.............] for all steps in episode
+            episode_samples = get_episode_samples(shield_epoch_trajectory, shield_gamma)
+            for sample in episode_samples:
+                state, action, cost = sample
+                error = ppo_agent.shield.loss(state.unsqueeze(0), action, cost)
+                ppo_agent.add_to_shield(error, sample)
 
         # Initialize a random environment - for Training Evaluation.
         # Another episode - with a random env (not generated by Gan) - for Training Evaluation.

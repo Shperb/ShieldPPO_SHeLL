@@ -2,15 +2,15 @@
   "algo": "ShieldPPO",
   "env": "CartPoleWithCost-v0",
   "print_freq": 1000,
-  "seed": 5,
-  "log_freq": 5000,
+  "seed": 9,
+  "log_freq": 10000,
   "save_model_freq": 10000,
   "max_ep_len": 200,
   "max_training_timesteps": 1000000,
   "record_mistakes": false,
   "render": true,
   "cpu": 4,
-  "base_path": "./models/try",
+  "base_path": "models/1.7.24-epb/unsafe_tresh=0.5/",
   "K_epochs": 80,
   "eps_clip": 0.2,
   "gamma": 0.99,
@@ -28,7 +28,7 @@
   "use_gen_v2": true,
   "K_epochs_gen": 30,
   "lr_gen": 5e-05,
-  "gen_masking_tresh": 1.5e+22,
+  "gen_masking_tresh": 5000000.0,
   "update_gen_timestep": 500,
   "gen_batch_size": 5,
   "generator_latent_dim": 32,
@@ -38,7 +38,7 @@
   ],
   "masscart_range": [
     1.0,
-    50.0
+    20.0
   ],
   "masspole_range": [
     0.1,
@@ -49,7 +49,7 @@
     3.0
   ],
   "force_mag_range": [
-    5,
-    20
+    5.0,
+    10.0
   ]
 }

@@ -9,7 +9,6 @@ import os
 
 
 """
-
 # Arguments
 arguments = None
 parser = argparse.ArgumentParser()
@@ -238,5 +237,11 @@ plot_reward_collisions(confgs_stats, confgs_stats_renv, save_path, ["gen", "no-g
 
 plot_shield_gen_losses(confgs_shield_stats, confgs_gen_stats, save_path, ["gen", "no-gen"])
 """
-log_stats = torch.load("C:/Users/Shir/PycharmProjects/ShieldPPO-updated/models/22.06.24_seeds_experiments_gen_v2/gen/seed=2/shield_loss_stats.log")
-print(log_stats)
+
+
+shield_log_stats = torch.load("models/ERB/unsafe-tresh=0.8/shield_loss_stats.log")
+shield_losses = [v[2] for v in shield_log_stats.values()]
+
+log_stats = torch.load("models/ERB/unsafe-tresh=0.8/stats.log")
+
+print("hi")

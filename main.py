@@ -97,9 +97,9 @@ def train(arguments=None):
                         help="print avg reward in the interval (in num timesteps)")
     parser.add_argument("--seed", type=int, default=1,
                         help="random seed (default: 1)")
-    parser.add_argument("--log_freq", type=int, default=10000,
+    parser.add_argument("--log_freq", type=int, default=5000,
                         help="log avg reward in the interval (in num timesteps)")
-    parser.add_argument("--save_model_freq", type=int, default=int(10000),
+    parser.add_argument("--save_model_freq", type=int, default=int(5000),
                         help="save model frequency (in num timesteps)")
     parser.add_argument("--max_ep_len", type=int, default=200,
                         help="max timesteps in one episode")
@@ -344,7 +344,6 @@ def train(arguments=None):
     use_gen_v1 = True
     if use_gen_v2:
         use_gen_v1 = False
-
     while time_step <= max_training_timesteps:
         if i_episode >= gen_masking_tresh:
             # using generator to get a generated configuration for env, and the first chosen action
@@ -441,8 +440,13 @@ def train(arguments=None):
 
             # update Shield
             if time_step % update_shield_timestep == 0 and type(ppo_agent) == ShieldPPO:
+                print("start updating shield")
+                update_shield_start = time.time()
                 shield_loss = ppo_agent.update_shield(shield_sample_batch_size)
+                print(f"finished updating shield. took {time.time()-update_shield_start}")
                 shield_losses.append(shield_loss)
+
+
                 shield_loss_update_stats[time_step] = (i_episode, t, shield_loss)
                 # TODO - Show Shahaf (22.6)
                 if use_gen_v2 and i_episode >= gen_masking_tresh:
@@ -468,6 +472,7 @@ def train(arguments=None):
 
             # Log in logging file
             if time_step % log_freq == 0:
+                print("start logging")
                 torch.save((time_steps, rewards, costs, tasks, datetime.now().replace(microsecond=0) - start_time,
                             episodes_len, amount_of_done, i_episode), save_stats_path)
                 torch.save(shield_loss_update_stats, save_shield_loss_stats_path)
@@ -521,7 +526,8 @@ def train(arguments=None):
             episode_samples = get_episode_samples(shield_epoch_trajectory, shield_gamma)
             for sample in episode_samples:
                 state, action, cost = sample
-                error = ppo_agent.shield.loss(state.unsqueeze(0), action, cost)
+                # TODO - use MAE loss here.
+                error = ppo_agent.compute_buffer_error(state.unsqueeze(0), action, cost)
                 ppo_agent.add_to_shield(error, sample)
 
         # Initialize a random environment - for Training Evaluation.

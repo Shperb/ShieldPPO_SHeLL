@@ -83,7 +83,7 @@ class PER_Buffer:  # stored as ( s, a, r, s_ ) in SumTree
     # small constant ensures that priorities are never zero
     e = 0.01
     # degree to which priorities are used (0 - uniform sampling)
-    a = 0.6
+    a = 0.8
     # initial value for importance sampling weights to correct the bias introduced by prioritizied sampling
     beta = 0.4
     # the amount by which 'beta' is incremented after each sampling (similiar to 'gamma')
@@ -166,8 +166,5 @@ class PER_Buffer:  # stored as ( s, a, r, s_ ) in SumTree
         p = self._get_priority(error)
         self.tree.update(idx, p)
 
-    # TODO - Show Shahaf-  24.06 - Added this
     def get_buffer_len(self):
-        # extracts and returns the length of the buffer. entires with 0 value are empty (as the buffer is initialized to max_n in the beggining, with zeros).
-        non_zero_elements = [element for element in self.tree.data if element != 0]
-        return len(non_zero_elements)
+        return self.tree.n_entries

@@ -507,6 +507,26 @@ class ShieldPPO(PPO):
         self.k_epochs_gen = k_epochs_gen
         self.k_epochs_ppo = k_epochs_ppo
         self.shield_gamma = shield_gamma
+        # L1Loss is MAE, see documentation here: https://pytorch.org/docs/stable/generated/torch.nn.L1Loss.html
+        self.buffer_error = nn.L1Loss()
+
+
+    def compute_buffer_error(self, state, action, cost):
+        #compute MAE error, for experience replay buffer.
+            # encode the given action
+        encoded_action = self.shield.encode_action(action.to(device))
+        # pass (s,a) in the network
+        state = state.to(device)
+        encoded_action = encoded_action.to(device)
+        x = torch.cat([state, encoded_action], -1)
+        x = x.float()
+        y = self.shield.net(x)
+        # cost is the real label
+        cost = cost.view(-1, 1)
+        # compute MSE loss
+        loss = self.buffer_error(y.to(device), cost.to(device))
+        return loss
+
 
     def add_to_shield(self, error, state_action):
         # epoch trajectory is a list that looks like this = [(s1,a1,label1,done1), (s2,a2,label2,done2), ...., sn,an,labeln,donen)] while n is the amount of steps in this episode
@@ -543,6 +563,13 @@ class ShieldPPO(PPO):
             self.shield_opt.step()
             total_loss += loss.item()
         avg_loss_across_epochs = total_loss / self.k_epochs_shield
+        # TODO - compute MAE for the batch samples, update based on MAE and update based on that (to the samples) shield_buffer.update()
+        # iterate through batch samples and update its error in the experience replay buffer:
+        for i, sample in enumerate(batch_samples):
+            sample_idx = idxs[i]
+            state, action, cost = sample
+            error = self.compute_buffer_error(state.unsqueeze(0), action, cost)
+            self.shield_buffer.update(sample_idx, error)
         return avg_loss_across_epochs
 
     """

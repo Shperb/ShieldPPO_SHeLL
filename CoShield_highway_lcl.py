@@ -19,7 +19,7 @@ from highway_env.envs import HighwayEnvFast, MergeEnv
 import numpy as np
 import constants
 # from SafetyRulesParser import SafetyRulesParser
-from CoShield_ppo import ShieldPPO, Shield, device
+from CoShield_ppo_lcl import ShieldPPO, Shield, device
 from ppo_shield import PPO
 from gym import spaces, register
 import sys
@@ -225,7 +225,7 @@ def train(args, env_name, env_idx):
     log_freq = args.log_freq  # log avg reward in the interval (in num timesteps)
     save_model_freq = args.save_model_freq  # save model frequency (in num timesteps)
     masking_threshold = args.masking_threshold
-    batch_size = args.batch_size
+    shield_sample_batch_size = args.shield_sample_batch_size
     action_std = None
     no_render = args.no_render
     action_std_decay_freq = None
@@ -233,7 +233,7 @@ def train(args, env_name, env_idx):
     min_action_std = None
     ################ PPO hyperparameters ################
     # update_shield_timestep = update_timestep = max_ep_len * 8  # TODO: change back to max_ep_len * 4 - update policy and shield every n timesteps
-    update_shield_timestep = update_timestep = max_ep_len * 0.5  # TODO: change back to max_ep_len * 4 - update policy and shield every n timesteps
+    update_shield_timestep = update_timestep = max_ep_len * 4  # TODO: change back to max_ep_len * 4 - update policy and shield every n timesteps
     k_epochs_ppo = args.k_epochs_ppo  # update policy for K epochs [10,50,100]
     k_epochs_shield = args.k_epochs_shield  # update Shield for K epochs [10,50,100]
     eps_clip = args.eps_clip  # clip parameter for PPO  [0.1,0.2]
@@ -289,9 +289,9 @@ def train(args, env_name, env_idx):
 
     action_std = args.action_std  # 0.15 0.9
     shield_gamma = args.shield_gamma
-    shield = Shield.get_shield(action_dim, has_continuous_action_space, folder_name)
+    shield = Shield.get_shield(action_dim, has_continuous_action_space, folder_name, [obs_type.Kinematics, obs_type.OccupancyGrid, obs_type.Camera])
     ppo_agent = ShieldPPO(shield, obs_type, multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, k_epochs_shield, eps_clip,
-                          has_continuous_action_space, action_std, masking_threshold, safety_threshold, shield_gamma)
+                          has_continuous_action_space, folder_name, action_std, masking_threshold, safety_threshold, shield_gamma)
     # ppo_agent = ShieldPPO(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, k_epochs_shield, eps_clip,
     #                       has_continuous_action_space, action_std, 1000000, safety_threshold)
     # ppo_agent = PPO(multi_task_env.state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, eps_clip,
@@ -311,7 +311,7 @@ def train(args, env_name, env_idx):
     costs = []
     shield_losses = []
     amount_of_done = 0
-
+    update_shared_params = True
     # training loop
     while time_step <= max_training_timesteps:
         state = multi_task_env.reset()
@@ -328,7 +328,7 @@ def train(args, env_name, env_idx):
         current_ep_reward = 0
         current_ep_cost = 0
         current_ep_len = 0
-        shield_epoch_trajectory = []  # for Shield Buffer
+        shield_ep_trajectory = []  # for Shield Buffer
         is_mistake = False
         if args.record_mistakes:
             base_video_path = f"./{base_path}/Videos"
@@ -343,6 +343,8 @@ def train(args, env_name, env_idx):
                 action, no_safe_action = ppo_agent.select_action(state, valid_actions, time_step)
             else:
                 action = ppo_agent.select_action(state)
+
+            prev_state = state
             state, reward, done, info, state_vf = multi_task_env.step(action)
             trajectory.appendleft((action, state))
             if len(trajectory) > args.record_trajectory_length:
@@ -360,9 +362,9 @@ def train(args, env_name, env_idx):
             current_ep_cost += cost
 
             # convert state and action to tensors and add to current trajectory
-            t_state = torch.FloatTensor(state).to(device)
+            t_prev_state = torch.FloatTensor(prev_state).to(device)
             t_action = torch.tensor([action]).to(device)
-            shield_epoch_trajectory.append((t_state, t_action, cost, done))
+            shield_ep_trajectory.append((t_prev_state, t_action, cost, done))
 
             # update PPO agent
             if time_step % update_timestep == 0:
@@ -370,7 +372,7 @@ def train(args, env_name, env_idx):
 
             # The update of the shield is more frequent
             if time_step % update_shield_timestep == 0 and type(ppo_agent) == ShieldPPO:
-                shield_loss = ppo_agent.update_shield(batch_size)
+                shield_loss = ppo_agent.update_shield(shield_sample_batch_size)
                 shield_loss_timesteps.append(time_step)
                 shield_losses.append(shield_loss)
 
@@ -420,9 +422,9 @@ def train(args, env_name, env_idx):
                 amount_of_done += 1
                 break
 
-        # IN THE END OF EACH EPOCH
+        # IN THE END OF EACH EPISODE
         if type(ppo_agent) == ShieldPPO:
-            ppo_agent.add_to_shield(shield_epoch_trajectory)
+            ppo_agent.add_to_shield(shield_ep_trajectory)
 
         rewards.append(current_ep_reward)
         costs.append(current_ep_cost)
@@ -502,7 +504,7 @@ def get_args():
                         help="log avg reward in the interval (in num timesteps)")
     parser.add_argument("--save_model_freq", type=int, default=int(5e4),
                         help="save model frequency (in num timesteps)")
-    parser.add_argument("--k_epochs_shield", type=int, default=25,
+    parser.add_argument("--k_epochs_shield", type=int, default=30,
                         help="update Shield for K epochs")
     parser.add_argument("--k_epochs_ppo", type=int, default=30,
                         help="update policy for K epochs")
@@ -536,8 +538,8 @@ def get_args():
     parser.add_argument("--masking_threshold", type=int, default=0, help="Time step at which to start using the shield")
     parser.add_argument("--pos_to_neg_threshold", type=int, default=300000, help="Time step at which to start using the shield")
     parser.add_argument("--no_render", action="store_true", help="Disable rendering during simulation")
-    parser.add_argument("--safety_threshold", type=float, default=0.6, help="safety_threshold")  # 0.5
-    parser.add_argument("--batch_size", type=float, default=128, help="Batch size to sample from buffer while updating shield")
+    parser.add_argument("--safety_threshold", type=float, default=0.5, help="safety_threshold")  # 0.5
+    parser.add_argument("--shield_sample_batch_size", type=float, default=1024, help="Batch size to sample from buffer while updating shield")
     return parser.parse_args()
 
 

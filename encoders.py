@@ -89,21 +89,49 @@ class KinematicsEncoder(nn.Module):
         # ).to(device)
 
         # for Highway
-        self.net = nn.Sequential(
-            nn.Linear(input_size, 128),
-            nn.ReLU(),
-            nn.Linear(128, 256),
-            nn.ReLU(),
-            nn.Linear(256, feature_dim),
-        ).to(device)
+        # self.net = nn.Sequential(
+        #     nn.Linear(input_size, 256),
+        #     nn.ReLU(),
+        #     nn.Linear(256, 256),
+        #     nn.ReLU(),
+        #     nn.Linear(256, feature_dim),
+        # ).to(device)
+
+        self.linear1 = nn.Linear(input_size, 256)
+        self.bn1 = nn.BatchNorm1d(256)
+
+        self.linear2 = nn.Linear(256, 256)
+        self.bn2 = nn.BatchNorm1d(256)
+
+        self.linear3 = nn.Linear(256, feature_dim)
+
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.3)
+
+        self.to(device)
 
         # self.optimizer = optim.Adam(self.parameters(), lr=5e-4)  # Learning rate is set to 0.001
         # self.loss_fn = nn.MSELoss()
 
     def forward(self, x):
-        return self.net(x)
+        x = self.linear1(x)
+        if x.size(0) > 1:  # Apply batch normalization only if batch size is greater than 1
+            x = self.bn1(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.linear2(x)
+        if x.size(0) > 1:
+            x = self.bn2(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.linear3(x)
+        return x
 
     def encode(self, states):
+        if len(states.shape) == 1:
+            states = states.unsqueeze(0)
         return self.forward(states)
 
     # def update_encoder(self):
@@ -123,16 +151,44 @@ class OccupancyGridEncoder(nn.Module):
         super(OccupancyGridEncoder, self).__init__()
         self.input_size = input_size
 
-        self.net = nn.Sequential(
-            nn.Linear(input_size, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Linear(256, feature_dim),
-        ).to(device)
+        self.linear1 = nn.Linear(input_size, 512)
+        self.bn1 = nn.BatchNorm1d(512)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.3)
+
+        self.linear2 = nn.Linear(512, 256)
+        self.bn2 = nn.BatchNorm1d(256)
+
+        self.linear3 = nn.Linear(256, feature_dim)
+
+        self.to(device)
+        # self.net = nn.Sequential(
+        #     nn.Linear(input_size, 512),
+        #     nn.BatchNorm1d(512),  # Batch normalization after the first linear layer
+        #     nn.ReLU(),
+        #     nn.Dropout(0.3),  # Dropout layer with 50% probability
+        #     nn.Linear(512, 256),
+        #     nn.BatchNorm1d(256),  # Batch normalization after the second linear layer
+        #     nn.ReLU(),
+        #     nn.Dropout(0.3),  # Dropout layer with 50% probability
+        #     nn.Linear(256, feature_dim)
+        # ).to(device)
 
     def forward(self, x):
-        return self.net(x)
+        x = self.linear1(x)
+        if x.size(0) > 1:  # Apply batch normalization only if batch size is greater than 1
+            x = self.bn1(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.linear2(x)
+        if x.size(0) > 1:
+            x = self.bn2(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.linear3(x)
+        return x
 
     def encode(self, states):
         if len(states.shape) == 1:

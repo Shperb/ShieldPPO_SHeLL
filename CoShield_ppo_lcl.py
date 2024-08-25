@@ -1,3 +1,4 @@
+import copy
 import datetime
 
 import numpy as np
@@ -12,6 +13,8 @@ import constants
 import encoders
 from encoders import ObservationType
 from ppo_shield import PPO, device
+from utils.priority_queue import PER_Buffer
+from collections import OrderedDict
 
 # set device to cpu or cuda
 if torch.cuda.is_available():
@@ -26,27 +29,28 @@ else:
 class ShieldBuffer:
     def __init__(self, n_max=1000000):
         self.n_max = n_max
-        self.epoch_trajectories = []
+        self.buffer = []
 
     def __len__(self):
-        return len(self.epoch_trajectories)
+        return len(self.buffer)
 
-    def add(self, epoch_trajectory):
-        self.epoch_trajectories.append(epoch_trajectory)
+    def add(self, s, a, cost):
+        self.buffer.append((s, a, cost))
 
     def sample(self, n):
         # n - amount of epochs to sample
-        # Exclude last epoch because we don't want a partial one (can be partial because we sample after certain amount of timesteps)
-        trajectories_to_sample = self.epoch_trajectories[:-1]
-        epochs_batch = random.sample(trajectories_to_sample, n - 1)
-        return epochs_batch
+        # Exclude last episode because we don't want a partial one (can be partial because we sample after certain amount of timesteps)
+        # trajectories_to_sample = self.epoch_trajectories[:-1]
+        epochs_batch = random.sample(self.buffer, n)
+        states, actions, costs = zip(*epochs_batch)
+        return torch.stack(states).to(device), torch.stack(actions).to(device), torch.tensor(costs).to(device)
 
 
 class Shield(nn.Module):
     _instance = None
     _lock = threading.Lock()
 
-    def __init__(self, action_dim, has_continuous_action_space, env_type):
+    def __init__(self, action_dim, has_continuous_action_space, env_type, obs_types):
         super().__init__()
         hidden_dim = 256
         feature_dim = encoders.feature_dim  # TODO: determine what is the shield input dimension
@@ -56,37 +60,6 @@ class Shield(nn.Module):
             self.action_embedding.weight.data = torch.eye(action_dim).to(device)
 
         dropout_rate = 0.3
-        # self.net = nn.Sequential(
-        #     nn.Linear(feature_dim + action_dim, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(hidden_dim, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(hidden_dim, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(hidden_dim, 1),
-        #     nn.Sigmoid()
-        # ).to(device)
-
-        # self.net = nn.Sequential(
-        #     nn.Linear(feature_dim + action_dim, 256),
-        #     nn.BatchNorm1d(256),
-        #     nn.ReLU(),
-        #     nn.Dropout(0.3),
-        #     nn.Linear(256, 256),
-        #     nn.BatchNorm1d(256),
-        #     nn.ReLU(),
-        #     nn.Dropout(0.3),
-        #     nn.Linear(256, 128),
-        #     nn.BatchNorm1d(128),
-        #     nn.ReLU(),
-        #     nn.Dropout(0.3),
-        #     nn.Linear(128, 64),
-        #     nn.BatchNorm1d(64),
-        #     nn.ReLU(),
-        #     nn.Dropout(0.3),
-        #     nn.Linear(64, 1),
-        #     nn.Sigmoid()
-        # ).to(device)
 
         self.linear1 = nn.Linear(feature_dim + action_dim, 256)
         self.bn1 = nn.BatchNorm1d(256)
@@ -103,28 +76,26 @@ class Shield(nn.Module):
         self.relu3 = nn.ReLU()
         self.dropout3 = nn.Dropout(p=dropout_rate)
 
-        self.linear4 = nn.Linear(128, 64)
-        self.bn4 = nn.BatchNorm1d(64)
-        self.relu4 = nn.ReLU()
-        self.dropout4 = nn.Dropout(p=dropout_rate)
-
-        self.linear5 = nn.Linear(64, 1)
+        self.linear4 = nn.Linear(128, 1)
         self.sigmoid = nn.Sigmoid()
 
-        self.shield_layers = [self.linear1, self.linear2, self.linear3, self.linear4, self.linear5]
+        self.shield_layers = [self.linear1, self.linear2, self.linear3, self.linear4]
         self.to(device)
 
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=5e-4, weight_decay=1e-5)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=5e-4)
         self.action_dim = action_dim
         # self.loss_fn = nn.L1Loss()
         # self.loss_fn = nn.SmoothL1Loss()
         self.loss_fn = nn.MSELoss()
         # self.loss_fn = nn.BCELoss()
+
         self.encoders_dict = self.build_encoders(env_type)
-        self.encoder1 = self.encoders_dict[ObservationType.Kinematics]
-        # self.encoder2 = self.encoders_dict[ObservationType.Camera]
-        self.encoder3 = self.encoders_dict[ObservationType.OccupancyGrid]
+        for obs_type in obs_types:
+            setattr(self, f'encoder{obs_type.value}', self.encoders_dict[obs_type])
+
         self.param = self.named_parameters()
+
+        self.global_itr = 0
 
     def encode_action(self, a):
         if self.has_continuous_action_space:
@@ -133,6 +104,8 @@ class Shield(nn.Module):
             a = self.action_embedding(a.to(device))
             if a.dim() == 1:
                 a = a.unsqueeze(0)
+            elif a.dim() == 3:
+                a = a.squeeze(1)
             return a
 
     def forward(self, s, a, obs_type, encode_state=True):
@@ -163,38 +136,28 @@ class Shield(nn.Module):
         x = self.dropout3(x)
 
         x = self.linear4(x)
-        if x.size(0) > 1:  # Apply batch normalization only if batch size is greater than 1
-            x = self.bn4(x)
-        x = self.relu4(x)
-        x = self.dropout4(x)
-
-        x = self.linear5(x)
         x = self.sigmoid(x)
 
         return x
 
     def loss(self, s, a, obs_type, cost):
-        if s.dim() == 1:
-            s = s.unsqueeze(0)
         cost = cost.view(-1, 1)
+        if a.dim() == 2:
+            a = a.squeeze(1)
         y = self.forward(s, a, obs_type)
         loss = self.loss_fn(y, cost)
         # loss = self.weighted_mse_loss(y, cost)
 
         l2_reg = 0.0
         # shield parameters
-        num_of_params = 0
         for layer in self.shield_layers:
             for param in layer.parameters():
-                num_of_params += 1
                 l2_reg += torch.norm(param, 2)
 
         # relevant encoder parameters
         for param in self.encoders_dict[obs_type].parameters():
-            num_of_params += 1
             l2_reg += torch.norm(param, 2)
 
-        print(num_of_params)
         # Add regularization term to the loss
         lambda_reg = 0.005
         loss += lambda_reg * l2_reg
@@ -211,10 +174,10 @@ class Shield(nn.Module):
         return encoded_states
 
     @staticmethod
-    def get_shield(action_dim, has_continuous_action_space, env_type):
+    def get_shield(action_dim, has_continuous_action_space, env_type, obs_types):
         with Shield._lock:
             if Shield._instance is None:
-                Shield._instance = Shield(action_dim, has_continuous_action_space, env_type)
+                Shield._instance = Shield(action_dim, has_continuous_action_space, env_type, obs_types)
         return Shield._instance
 
     @staticmethod
@@ -246,70 +209,85 @@ class ShieldPPO(PPO):  # currently only discrete action
     _shield_lock = threading.Lock()
 
     def __init__(self, shield, obs_type, state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, k_epochs_shield, eps_clip,
-                 has_continuous_action_space, action_std_init=0.6, masking_threshold=0, safety_threshold=0.5, shield_gamma=0.6):
+                 has_continuous_action_space, folder_name, action_std_init=0.6, masking_threshold=0, safety_threshold=0.5, shield_gamma=0.6):
         super().__init__(state_dim, action_dim,
                          lr_actor, lr_critic, gamma, k_epochs_ppo, eps_clip,
                          has_continuous_action_space, obs_type, action_std_init)
-        self.shield = shield
+        self.global_shield = shield
+        self.local_shield = Shield(action_dim, has_continuous_action_space, folder_name, [obs_type])
+        self.local_optimizer = torch.optim.Adam(self.local_shield.parameters(), lr=5e-4)
         self.obs_type = obs_type
         self.action_dim = action_dim
-        self.s_params = self.shield.parameters()
-        self.shield_buffer = ShieldBuffer()
+        self.s_params = self.global_shield.parameters()
+        self.shield_buffer = PER_Buffer(constants.SHIELD_BUFFER_SIZE)
         self.safety_threshold = safety_threshold
         self.masking_threshold = masking_threshold
         self.state_dim = state_dim
         self.k_epochs_shield = k_epochs_shield
         self.shield_gamma = shield_gamma
+        self.shield_updates = 1
+        self.alpha = 0.9
+        self.buffer_error = nn.L1Loss()
 
-    def add_to_shield(self, epoch_trajectory):
+    def compute_buffer_error(self, state, action, cost):
+        """compute MAE error, for experience replay buffer."""
+        # pass (s,a) in the network
+        y = self.local_shield.forward(state.to(device), action.to(device), self.obs_type)
+        # cost is the real label
+        cost = cost.view(-1, 1)
+        # compute MAE loss
+        loss = self.buffer_error(y.to(device), cost.to(device))
+        return loss
+
+    def add_to_shield(self, episode_trajectory):
         with torch.no_grad():
-            self.shield_buffer.add(epoch_trajectory)
+            costs = self.calc_episode_costs(episode_trajectory)
+            for tup, cost in zip(episode_trajectory, costs):
+                s, a = tup[0], tup[1]
+                cost = torch.tensor(cost).to(device)
+                error = self.compute_buffer_error(s, a, cost)
+                self.shield_buffer.add(error, (s, a, cost))
 
     def update_shield(self, batch_size):
         start = datetime.datetime.now()
 
-        shield_buffer_size = len(self.shield_buffer.epoch_trajectories)
+        shield_buffer_size = len(self.shield_buffer)
         if shield_buffer_size == 0:
             return 0.
         if shield_buffer_size <= batch_size:
             batch_size = shield_buffer_size
-        # Sampling batch_size episodes from Shield buffer
-        episodes_batch = self.shield_buffer.sample(batch_size)
-        # Save average loss across all the episodes in batch (length will be shield_episodes_batch_size)
-        episodes_batch_loss = []
 
-        for episode_traj in episodes_batch:
-            costs = self.calc_episode_costs(episode_traj)
+        batch_samples, idxs, _ = self.shield_buffer.sample(batch_size)
+        states, actions, costs = zip(*batch_samples)
+        _states, _actions, _costs = torch.stack(states).to(device), torch.stack(actions).to(device), torch.tensor(costs).to(device)
 
-            states_ = [step[0] for step in reversed(episode_traj)]
-            actions_ = [step[1] for step in reversed(episode_traj)]
+        loss_ = 0.
+        for i in range(self.k_epochs_shield):
+            self.local_shield.optimizer.zero_grad()
+            loss = self.local_shield.loss(_states, _actions, self.obs_type, _costs)
+            loss.backward()
+            self.local_shield.optimizer.step()
+            loss_ += loss.item()
 
-            states = torch.squeeze(torch.stack(states_, dim=0)).detach().to(device)
-            actions = torch.squeeze(torch.stack(actions_, dim=0)).detach().to(device)
+        self.shield_updates += 1
 
-            episode_loss = 0.
-            for i in range(self.k_epochs_shield):
-                # pre_update_params = {name: param.clone() for name, param in self.shield.named_parameters()}
-                with self._shield_lock:
-                    self.shield.optimizer.zero_grad()
-                    loss = self.shield.loss(states, actions, self.obs_type, torch.tensor(costs).to(device))
-                    loss.backward()
-                    self.shield.optimizer.step()
-                episode_loss += loss.item()
-
-                # self.shield.encoders_dict[ObservationType.Kinematics].update_encoder()
-
-                # for name, param in self.shield.named_parameters():
-                #     print(f'Layer: {name} | Gradients: {param.grad}')
-
-                # print("")
-            average_episode_loss = episode_loss / self.k_epochs_shield
-            episodes_batch_loss.append(average_episode_loss)
+        if self.shield_updates % 4 == 0:
+            print(f'Agent {self.obs_type} updating shared shield...')
+            self.update_shared_shield()
+            self.save(constants.AC_PATH, constants.SHIELD_PATH)
 
         end = datetime.datetime.now() - start
         print(f"Batch size is: {batch_size} and it took {end} to update the shield")
+
+        # update the buffer with the new priorities
+        for i, sample in enumerate(batch_samples):
+            sample_idx = idxs[i]
+            state, action, cost = sample
+            error = self.compute_buffer_error(state.unsqueeze(0), action, cost)
+            self.shield_buffer.update(sample_idx, error)
+
         # return loss average across all the instances in the batch
-        return sum(episodes_batch_loss) / batch_size
+        return loss_ / self.k_epochs_shield
 
     def calc_episode_costs(self, episode_traj):
         """
@@ -342,7 +320,7 @@ class ShieldPPO(PPO):  # currently only discrete action
             state_ = state.view(1, -1).repeat(self.action_dim, 1)  # (n_action, state_dim)
             if timestep >= self.masking_threshold:
                 # returns a safety score per each action from the state
-                safety_scores = self.shield(state_, actions, self.obs_type)
+                safety_scores = self.local_shield(state_, actions, self.obs_type)
                 mask = safety_scores.lt(self.safety_threshold).float().view(-1)
                 mask = valid_mask * mask
                 action_probs_ = action_probs.clone()
@@ -372,13 +350,42 @@ class ShieldPPO(PPO):  # currently only discrete action
         self.buffer.state_values.append(state_val)
         return action.item(), no_safe_action
 
+    def update_shared_shield(self):
+        with self._shield_lock:  # Lock to ensure atomic operation
+            local_dict = self.local_shield.state_dict()
+            global_dict = self.global_shield.state_dict()
+
+            # Update global model weights using the new local model weights
+            for key in local_dict.keys():
+                global_dict[key] = ((1 - self.alpha) * global_dict[key]) + (self.alpha * local_dict[key])
+            self.global_shield.load_state_dict(global_dict)
+
+            # Update local model with the new global model weights
+            filtered_state_dict = OrderedDict((k, v) for k, v in global_dict.items() if k in local_dict)
+            self.local_shield.load_state_dict(filtered_state_dict)
+
+            # Update alpha
+            self.alpha = 0.99 * self.alpha
+
+    def update_local_shield(self, states, actions, obs_type, costs):
+        self.local_optimizer.zero_grad()
+        loss = self.local_shield.loss(states, actions, obs_type, costs)
+        loss.backward()
+        self.local_optimizer.step()
+        return loss
+
+    def sync_local_with_shared(self):
+        with self._shield_lock:  # Lock to ensure atomic operation
+            for local_param, shared_param in zip(self.local_shield.parameters(), self.global_shield.parameters()):
+                local_param.data.copy_(shared_param.data)
+
     def save(self, checkpoint_path_ac, checkpoint_path_shield):
         # save actor critic networks
         torch.save(self.policy_old.state_dict(), checkpoint_path_ac)
         # save shield network
-        torch.save(self.shield.state_dict(), checkpoint_path_shield)
+        torch.save(self.global_shield.state_dict(), checkpoint_path_shield)
 
     def load(self, checkpoint_path_ac, checkpoint_path_shield):
         self.policy_old.load_state_dict(torch.load(checkpoint_path_ac, map_location=lambda storage, loc: storage))
         self.policy.load_state_dict(torch.load(checkpoint_path_ac, map_location=lambda storage, loc: storage))
-        self.shield.load_state_dict(torch.load(checkpoint_path_shield, map_location=lambda storage, loc: storage))
+        self.global_shield.load_state_dict(torch.load(checkpoint_path_shield, map_location=lambda storage, loc: storage))

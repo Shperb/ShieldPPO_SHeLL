@@ -17,7 +17,11 @@ CP_INPUT_SIZE = CP_ACTION_SPACE * CP_OBS_SPACE
 CR_IMAGE_HEIGHT = 96
 CR_IMAGE_WIDTH = 96
 
+# Checkpoint paths
+SHIELD_PATH = "models/shield.pth"
+AC_PATH = "models/actor_critic.pth"
 
+SHIELD_BUFFER_SIZE = 10000
 
 # import torch
 # print(torch.version.cuda)

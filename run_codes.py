@@ -27,22 +27,22 @@ def smooth(x, window_size=200):
 
 def plot_rewards(ax, df, obs):
     ax.plot(df[0], smooth(df[1], 5000), label=obs)  # 500
-    ax.set_xlabel('Time Step')
+    ax.set_xlabel('Time Steps (thousands)')
     ax.set_ylabel('Avg Episodic Reward')
     # ax.set_title(f'{obs} Observation')
     ax.set_title(f'Rewards Graph')
 
 
 def plot_collisions(ax, df, obs):
-    ax.plot(df[0], smooth(df[2], 1000))
-    ax.set_xlabel('Time Step')
+    ax.plot(df[0], smooth(df[2], 3000))
+    ax.set_xlabel('Time Steps (thousands)')
     ax.set_ylabel('Collisions')
     ax.set_title(f'Collisions Graph')
 
 
 def plot_shield_loss_new(ax, df, obs):
     ax.plot(df[0], smooth(df[1], 20), label=obs)  # 10
-    ax.set_xlabel('Time Step')
+    ax.set_xlabel('Time Steps (thousands)')
     ax.set_ylabel('Shield Loss')
     ax.set_title(f'Shield Loss Graph')
 
@@ -71,6 +71,7 @@ def plot_runs_old(paths):
 def plot_runs(paths, plots):
     # for folder_path in paths:
     for folder_path, p in zip(paths, plots):
+        print(folder_path)
         stats = get_stats_from_log_files(folder_path, 'stats')
         shield_log_stats = get_stats_from_log_files(folder_path, 'shield_loss_stats')
         # index = 0
@@ -96,10 +97,21 @@ def plot_runs(paths, plots):
 def get_stats_from_log_files(folder_path, starts_with):
     stats = tuple()
     log_files = [file for file in os.listdir(folder_path) if file.startswith(starts_with) and file.endswith('.json')]
+    if not log_files:
+        for file in os.listdir(folder_path):
+            if os.path.isdir(f"{folder_path}/{file}"):
+                for f in os.listdir(f"{folder_path}/{file}"):
+                    if f.startswith(starts_with) and f.endswith('.json'):
+                        log_files.append(f"{file}/{f}")
     for i in range(1, len(log_files) + 1):
-        file_path = f'{folder_path}/{starts_with}{i}.json'
+        file_path = f'{folder_path}/{log_files[i - 1]}'
         with open(file_path, 'r') as f:
             current_stats = tuple(json.load(f))
+
+        if 'shield' not in starts_with:
+            modified_timestep = [value / 1000 for value in current_stats[0]]
+            # Create a new tuple with the modified first list and the other lists unchanged
+            current_stats = (modified_timestep, current_stats[1], current_stats[2], current_stats[3])
 
         if i == 1:
             stats = stats + current_stats
@@ -129,21 +141,28 @@ def find_latest_edited_folder(directory, k=1):
 
 def plot_last_runs(stats_type, k=1):
     paths = find_latest_edited_folder(f"models/{stats_type}_stats/occ3kin2_3_20240613-131135/", k)
-    paths.append(f'models/{stats_type}_stats/occu1_3_20240613-213400/Occupancy1_CO')
-    paths.append(f'models/{stats_type}_stats/Occupancy_20240610-183636')
+    # paths.append(f'models/{stats_type}_stats/occu1_3_20240613-213400/Occupancy1_CO')
+    # paths.append(f'models/{stats_type}_stats/Occupancy_20240610-183636')
+    paths = find_latest_edited_folder(f"models/{stats_type}_stats/1606/", k)
+
     plots = ["kin", "kin", "occu", "occu", "occu", 'occureg', 'PPO']
     plot_runs(paths, plots)
 
 
 def plot_paths(stats_type):
     folder = "models/{}_stats/{}"
-    paths = ["Occupancy_20240610-183636", "Occupancy_20240609-141931_CO"]
-    # paths = ["Occupancy_20240609-141120_CO", "Occupancy_20240609-141931_CO"]
-    # paths = ["Occupancy_20240609-141931_CO"]
+    # paths = ["occ3kin2_5_20240615-204126\Occupancy1_CO", "occu1_5_20240615-204026\Occupancy1_CO", "ppo_5_20240615-204509\Occupancy1_CO"]
+    # paths = ["0607\occu2kin2_lcl_4_20240706-123333\Kinematics3_CO", "0607\kin1_lcl_4_20240706-123342\Kinematics1_CO", "0707\occu2kin2_lcl_4_20240707-001150\Kinematics3_CO"]
+    # paths = ["0607\occu1_lcl_4_20240706-121526\Occupancy1_CO", "0607\occu3_lcl_4_20240706-121526\Occupancy1_CO", "0707\occu3_lcl_4_20240707-001150\Occupancy1_CO", "0707\occu1_lcl_4_20240707-001150\Occupancy1_CO", r"0707\ppo_4_20240706-213348"]
+    # paths = ["0707\occu3_lcl_4_20240707-001150\Occupancy1_CO", "0707\occu1_lcl_4_20240707-001150\Occupancy1_CO"]
+    paths = ["0807\occu3_lcl_4_20240708-104824\Occupancy1_CO", r"0807\occu1_lcl_4_20240708-104836\Occupancy1_CO", "0707\ppo_4_20240706-213348", "1207\occu3_lcl_4_20240710-065528\Occupancy1_CO"]
+    paths = ["1207\occu3kin2_lcl_4_20240710-065554\Kinematics4_CO", "1207\kin1_lcl_4_20240710-065606\Kinematics1_CO"]
 
     paths = [folder.format(stats_type, p) for p in paths]
     # plots = ["0.01"]
-    plots = ["PPO", "0.01"]
+    # plots = ["kinmult", "solo", "kinnew"]
+    # plots = ["solo", "trio", "solonew", "trionew", "ppo"]
+    plots = ["oco3", "oco1", "PPO", "oco3new"]
     plot_runs(paths, plots)
 
 
@@ -153,5 +172,5 @@ obs = "Camera"
 stats_type = 'Highway'
 # stats_type = 'CarRacing'
 
-plot_last_runs(stats_type, 5)
-# plot_paths(stats_type)
+# plot_last_runs(stats_type, 3)
+plot_paths(stats_type)

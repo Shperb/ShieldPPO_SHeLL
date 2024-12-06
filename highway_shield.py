@@ -22,7 +22,7 @@ from torch.distributions import Categorical
 import numpy as np
 import highway_env
 
-import constants
+from utils import constants
 import ppo_original
 # from SafetyRulesParser import SafetyRulesParser
 from ppo_shield import PPO, device, ShieldPPO, Shield

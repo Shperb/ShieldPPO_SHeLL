@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.distributions import MultivariateNormal
 from torch.distributions import Categorical
 import threading
-import constants
+from utils import constants
 import encoders
 from encoders import ObservationType
 
@@ -531,7 +531,8 @@ class Shield(nn.Module):
             # Highway
             encoders_dict = {
                 ObservationType.Camera: encoders.CameraEncoder(constants.HW_IMAGE_WIDTH, constants.HW_IMAGE_HEIGHT, 1),
-                ObservationType.Kinematics: encoders.KinematicsEncoder(constants.VEHICLE_COUNT * constants.ENV_FEATURES_SIZE),
+                ObservationType.Kinematics: encoders.KinematicsEncoder(
+                    constants.VEHICLE_COUNT * constants.ENV_FEATURES_SIZE),
                 ObservationType.OccupancyGrid: encoders.OccupancyGridEncoder(constants.OCCUPANCY_INPUT_SIZE)
             }
         elif 'CartPole' in env_type:

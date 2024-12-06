@@ -14,10 +14,10 @@ from gym.utils import seeding
 from gym.wrappers import ResizeObservation
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
 from gym.wrappers.pixel_observation import PixelObservationWrapper
-from highway_env.envs import HighwayEnvFast, MergeEnv
+# from highway_env.envs import HighwayEnvFast, MergeEnv
 # import safe_rl
 import numpy as np
-import constants
+from utils import constants
 # from SafetyRulesParser import SafetyRulesParser
 from CoShield_ppo_lcl import ShieldPPO, Shield, device
 from ppo_shield import PPO

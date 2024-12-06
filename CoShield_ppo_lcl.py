@@ -1,5 +1,6 @@
 import copy
 import datetime
+import pickle
 
 import numpy as np
 import random
@@ -9,7 +10,7 @@ import torch.nn.functional as F
 from torch.distributions import MultivariateNormal
 from torch.distributions import Categorical
 import threading
-import constants
+from utils import constants
 import encoders
 from encoders import ObservationType
 from ppo_shield import PPO, device
@@ -82,7 +83,6 @@ class Shield(nn.Module):
         self.shield_layers = [self.linear1, self.linear2, self.linear3, self.linear4]
         self.to(device)
 
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=5e-4)
         self.action_dim = action_dim
         # self.loss_fn = nn.L1Loss()
         # self.loss_fn = nn.SmoothL1Loss()
@@ -93,6 +93,7 @@ class Shield(nn.Module):
         for obs_type in obs_types:
             setattr(self, f'encoder{obs_type.value}', self.encoders_dict[obs_type])
 
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=5e-4)
         self.param = self.named_parameters()
 
         self.global_itr = 0
@@ -146,7 +147,6 @@ class Shield(nn.Module):
             a = a.squeeze(1)
         y = self.forward(s, a, obs_type)
         loss = self.loss_fn(y, cost)
-        # loss = self.weighted_mse_loss(y, cost)
 
         l2_reg = 0.0
         # shield parameters
@@ -159,14 +159,10 @@ class Shield(nn.Module):
             l2_reg += torch.norm(param, 2)
 
         # Add regularization term to the loss
-        lambda_reg = 0.005
+        lambda_reg = 0.001
         loss += lambda_reg * l2_reg
 
         return loss
-
-    def weighted_mse_loss(self, pred, target):
-        weights = torch.tensor([0.1, 0.2, 0.3, 0.4, 1.0]).to(device)
-        return (weights * (pred - target) ** 2).mean()
 
     def encode_state(self, state, obs_type):
         encoder = self.encoders_dict[obs_type]
@@ -186,7 +182,8 @@ class Shield(nn.Module):
             # Highway
             encoders_dict = {
                 ObservationType.Camera: encoders.CameraEncoder(constants.HW_IMAGE_WIDTH, constants.HW_IMAGE_HEIGHT, 1),
-                ObservationType.Kinematics: encoders.KinematicsEncoder(constants.VEHICLE_COUNT * constants.ENV_FEATURES_SIZE),
+                ObservationType.Kinematics: encoders.KinematicsEncoder(
+                    constants.VEHICLE_COUNT * constants.ENV_FEATURES_SIZE),
                 ObservationType.OccupancyGrid: encoders.OccupancyGridEncoder(constants.OCCUPANCY_INPUT_SIZE)
             }
         elif 'CartPole' in env_type:
@@ -204,16 +201,38 @@ class Shield(nn.Module):
 
         return encoders_dict
 
+    # def update_global_shield(self, lcl_shield):
+    #     with self._lock:  # Lock to ensure atomic operation
+    #         local_dict = lcl_shield.state_dict()
+    #         global_dict = self.state_dict()
+    #         last_global_dict = copy.deepcopy(global_dict)
+    #
+    #         # for key in local_dict.keys():
+    #         #     global_dict[key] = global_dict[key] + eta_k * local_dict[key]
+    #
+    #         eta_k = self.lr_eta * (1 / (self.global_itr + 1))  # learning rate
+    #         # Update global model weights using the new local model weights
+    #         with torch.no_grad():
+    #             for global_param, local_param in zip(self.global_shield.parameters(), self.local_shield.parameters()):
+    #                 if local_param.grad is not None:
+    #                     global_param.add_(eta_k * local_param.grad)
+    #
+    #         self.load_state_dict(global_dict)
+    #
+    #         self.global_itr += 1
+    #
+    #         return last_global_dict, global_dict
+
 
 class ShieldPPO(PPO):  # currently only discrete action
-    _shield_lock = threading.Lock()
+    _global_shield_lock = threading.Lock()
 
-    def __init__(self, shield, obs_type, state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, k_epochs_shield, eps_clip,
+    def __init__(self, global_shield, obs_type, state_dim, action_dim, lr_actor, lr_critic, gamma, k_epochs_ppo, k_epochs_shield, eps_clip,
                  has_continuous_action_space, folder_name, action_std_init=0.6, masking_threshold=0, safety_threshold=0.5, shield_gamma=0.6):
         super().__init__(state_dim, action_dim,
                          lr_actor, lr_critic, gamma, k_epochs_ppo, eps_clip,
                          has_continuous_action_space, obs_type, action_std_init)
-        self.global_shield = shield
+        self.global_shield = global_shield
         self.local_shield = Shield(action_dim, has_continuous_action_space, folder_name, [obs_type])
         self.local_optimizer = torch.optim.Adam(self.local_shield.parameters(), lr=5e-4)
         self.obs_type = obs_type
@@ -226,8 +245,16 @@ class ShieldPPO(PPO):  # currently only discrete action
         self.k_epochs_shield = k_epochs_shield
         self.shield_gamma = shield_gamma
         self.shield_updates = 1
-        self.alpha = 0.9
+        self.alpha = 0.001  # 10^-3
         self.buffer_error = nn.L1Loss()
+        self.lr_eta = 0.1  # 3 * 10^-3
+        self.sync_local_with_global()
+
+        # mu_f = 0.0
+        # m = 0.0
+        # g = 9.81
+        #
+        # self.eta_0 = (3 * mu_F) / (M * g)
 
     def compute_buffer_error(self, state, action, cost):
         """compute MAE error, for experience replay buffer."""
@@ -261,6 +288,9 @@ class ShieldPPO(PPO):  # currently only discrete action
         states, actions, costs = zip(*batch_samples)
         _states, _actions, _costs = torch.stack(states).to(device), torch.stack(actions).to(device), torch.tensor(costs).to(device)
 
+        # Save the initial weights before optimization
+        initial_weights = copy.deepcopy(dict(self.local_shield.named_parameters()))
+
         loss_ = 0.
         for i in range(self.k_epochs_shield):
             self.local_shield.optimizer.zero_grad()
@@ -269,23 +299,29 @@ class ShieldPPO(PPO):  # currently only discrete action
             self.local_shield.optimizer.step()
             loss_ += loss.item()
 
-        self.shield_updates += 1
+        print(f"Shield loss: {loss_ / 10}")
 
-        if self.shield_updates % 4 == 0:
-            print(f'Agent {self.obs_type} updating shared shield...')
-            self.update_shared_shield()
-            self.save(constants.AC_PATH, constants.SHIELD_PATH)
+        # Save the new weights after optimization
+        new_weights = dict(self.local_shield.named_parameters())
 
-        end = datetime.datetime.now() - start
-        print(f"Batch size is: {batch_size} and it took {end} to update the shield")
+        # Dictionary to store changes in weights
+        weight_changes = {}
+        for key in initial_weights.keys():
+            weight_changes[key] = new_weights[key] - initial_weights[key]
 
-        # update the buffer with the new priorities
+        self.run_global_iteration(weight_changes)
+
+        # Update the buffer with the new priorities
         for i, sample in enumerate(batch_samples):
             sample_idx = idxs[i]
             state, action, cost = sample
             error = self.compute_buffer_error(state.unsqueeze(0), action, cost)
             self.shield_buffer.update(sample_idx, error)
 
+        end = datetime.datetime.now() - start
+        print(f"Batch size is: {batch_size} and it took {end} to update the shield")
+
+        # return loss_
         # return loss average across all the instances in the batch
         return loss_ / self.k_epochs_shield
 
@@ -350,42 +386,97 @@ class ShieldPPO(PPO):  # currently only discrete action
         self.buffer.state_values.append(state_val)
         return action.item(), no_safe_action
 
-    def update_shared_shield(self):
-        with self._shield_lock:  # Lock to ensure atomic operation
-            local_dict = self.local_shield.state_dict()
-            global_dict = self.global_shield.state_dict()
+    def run_global_iteration(self, weight_changes):
+        # Step 1: update global shield with the computed local gradients
+        global_itr, last_global_dict, new_global_dict = self.update_global_shield(weight_changes)
 
-            # Update global model weights using the new local model weights
-            for key in local_dict.keys():
-                global_dict[key] = ((1 - self.alpha) * global_dict[key]) + (self.alpha * local_dict[key])
-            self.global_shield.load_state_dict(global_dict)
+        # Step 2: update local shield using the new global shield
+        self.update_local_shield(global_itr, last_global_dict, new_global_dict)
 
-            # Update local model with the new global model weights
-            filtered_state_dict = OrderedDict((k, v) for k, v in global_dict.items() if k in local_dict)
-            self.local_shield.load_state_dict(filtered_state_dict)
+    def update_global_shield(self, weight_changes):
+        # Update global model weights using the new local model weights
+        with self._global_shield_lock:
+            print(f'Agent {self.obs_type} updating global shield...')
+            last_global_dict = copy.deepcopy(self.global_shield.state_dict())  # save for later calculations
+            eta_k = self.lr_eta * (1 / (self.global_shield.global_itr + 1))  # learning rate
+            # print(f'eta_k is: {eta_k}\tK is: {self.global_shield.global_itr}')
 
-            # Update alpha
-            self.alpha = 0.99 * self.alpha
+            global_dict = dict(self.global_shield.named_parameters())
 
-    def update_local_shield(self, states, actions, obs_type, costs):
-        self.local_optimizer.zero_grad()
-        loss = self.local_shield.loss(states, actions, obs_type, costs)
-        loss.backward()
-        self.local_optimizer.step()
-        return loss
+            with torch.no_grad():
+                for key in weight_changes.keys():
+                    if key in global_dict:
+                        norm = torch.norm(weight_changes[key])  # L2 norm
+                        normalized_weight = weight_changes[key] / norm if norm != 0 else weight_changes[key]
+                        global_dict[key] += eta_k * normalized_weight
 
-    def sync_local_with_shared(self):
-        with self._shield_lock:  # Lock to ensure atomic operation
-            for local_param, shared_param in zip(self.local_shield.parameters(), self.global_shield.parameters()):
-                local_param.data.copy_(shared_param.data)
+            # global_dict = dict(self.global_shield.named_parameters())
+            # local_dict = dict(self.local_shield.named_parameters())
+            #
+            # with torch.no_grad():
+            #     for name, local_param in local_dict.items():
+            #         if name in global_dict:
+            #             global_param = global_dict[name]
+            #             if local_param.grad is not None:
+            #                 grad_norm = torch.norm(local_param.grad)  # L2 norm
+            #                 normalized_grad = local_param.grad / grad_norm if grad_norm != 0 else local_param.grad
+            #                 global_param.add_(eta_k * normalized_grad)
 
-    def save(self, checkpoint_path_ac, checkpoint_path_shield):
+            self.global_shield.global_itr += 1
+            global_itr = self.global_shield.global_itr  # save the global iteration number
+            new_global_dict = copy.deepcopy(self.global_shield.state_dict())
+
+        return global_itr, last_global_dict, new_global_dict
+
+    def update_local_shield(self, global_itr, last_global_dict, new_global_dict):
+        # Filter out the parameters that are not in the local model (e.g. encoders)
+        local_dict = self.local_shield.state_dict()
+        filtered_new_global_dict = OrderedDict((k, v) for k, v in new_global_dict.items() if k in local_dict)
+        filtered_last_global_dict = OrderedDict((k, v) for k, v in last_global_dict.items() if k in local_dict)
+
+        # Update local model with the new global model weights
+        alpha = (1 / (self.local_shield.global_itr + 1)) ** (4 / 5)
+        rate = (1 - alpha) / alpha
+        # print(f'The alpha rate is: {rate}\tK-dK is: {self.local_shield.global_itr}')
+        for key in local_dict.keys():
+            # print(f'The diff is {rate * (filtered_new_global_dict[key] - filtered_last_global_dict[key])}')
+            local_dict[key] = filtered_new_global_dict[key] + (rate * (filtered_new_global_dict[key] - filtered_last_global_dict[key]))
+
+        print(f'Agent {self.obs_type} global iteration updated from {self.local_shield.global_itr} to {global_itr}')
+        self.local_shield.global_itr = global_itr  # Update the local iteration number
+
+        self.local_shield.load_state_dict(local_dict)
+
+    def sync_local_with_global(self):
+        with self._global_shield_lock:  # Lock to ensure atomic operation
+            with torch.no_grad():
+                global_dict = dict(self.global_shield.named_parameters())
+                local_dict = dict(self.local_shield.named_parameters())
+
+                for name, local_param in local_dict.items():
+                    if name in global_dict:
+                        local_param.data.copy_(global_dict[name].data)
+
+    def save(self, checkpoint_path_ac, checkpoint_path_ac_optim, checkpoint_path_shield, checkpoint_path_shield_optim, rng_state, timestep):
         # save actor critic networks
         torch.save(self.policy_old.state_dict(), checkpoint_path_ac)
+        # save actor critic optimizer
+        torch.save(self.optimizer.state_dict(), checkpoint_path_ac_optim)
         # save shield network
         torch.save(self.global_shield.state_dict(), checkpoint_path_shield)
+        # save shield optimizer
+        torch.save(self.local_optimizer.state_dict(), checkpoint_path_shield_optim)
+
+        # Save RNG state to a file
+        with open('rng_state.pkl', 'wb') as file:
+            pickle.dump(rng_state, file)
+
+        # Save time step to a file
+        with open('rng_state.pkl', 'wb') as file:
+            pickle.dump(timestep, file)
 
     def load(self, checkpoint_path_ac, checkpoint_path_shield):
         self.policy_old.load_state_dict(torch.load(checkpoint_path_ac, map_location=lambda storage, loc: storage))
         self.policy.load_state_dict(torch.load(checkpoint_path_ac, map_location=lambda storage, loc: storage))
-        self.global_shield.load_state_dict(torch.load(checkpoint_path_shield, map_location=lambda storage, loc: storage))
+        self.global_shield.load_state_dict(torch.load(checkpoint_path_shield, map_location=lambda storage, loc: storage), strict=False)
+        self.local_shield.load_state_dict(torch.load(checkpoint_path_shield, map_location=lambda storage, loc: storage), strict=False)

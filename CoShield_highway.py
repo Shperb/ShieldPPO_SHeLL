@@ -5,24 +5,17 @@ import collections
 import json
 import gym
 import os
-import glob
-import time
 from datetime import datetime
 import torch
-import torch.nn as nn
 from gym.utils import seeding
-from gym.wrappers import ResizeObservation
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
 from gym.wrappers.pixel_observation import PixelObservationWrapper
-from highway_env.envs import HighwayEnvFast, MergeEnv
 # import safe_rl
 import numpy as np
-import constants
+from utils import constants
 # from SafetyRulesParser import SafetyRulesParser
 from CoShield_ppo import ShieldPPO, Shield, device
-from ppo_shield import PPO
 from gym import spaces, register
-import sys
 import threading
 from encoders import ObservationType
 

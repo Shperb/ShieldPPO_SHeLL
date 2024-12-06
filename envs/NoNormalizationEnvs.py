@@ -2,7 +2,7 @@ from gym.envs.registration import register
 from highway_env import utils
 from highway_env.envs import HighwayEnvFast, HighwayEnv, IntersectionEnv, RoundaboutEnv, UTurnEnv, TwoWayEnv, MergeEnv
 from highway_env.vehicle.controller import ControlledVehicle
-import constants
+from utils import constants
 from classic_control_env.cartpole import CartPoleEnv
 from box2d_env.car_racing import CarRacing, SCALE, PLAYFIELD
 

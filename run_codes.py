@@ -14,6 +14,8 @@ else:
     print("Device set to : cpu")
 
 fig, axs = plt.subplots(1, 3, figsize=(16, 6))  # Adjust figsize as needed
+LOG_FILE_NAME = 'stats'
+SHIELD_LOG_FILE_NAME = 'shield_loss_stats'
 
 
 def smooth(x, window_size=200):
@@ -25,72 +27,72 @@ def smooth(x, window_size=200):
     return b
 
 
-def plot_rewards(ax, df, obs):
-    ax.plot(df[0], smooth(df[1], 5000), label=obs)  # 500
-    ax.set_xlabel('Time Steps (thousands)')
+def plot_rewards(ax, df, obs, window_size=15000):
+    ax.plot(df[0], smooth(df[1], window_size), label=obs)  # 500
+    ax.set_xlabel(r'Time Steps ($\times 10^3$)')
     ax.set_ylabel('Avg Episodic Reward')
     # ax.set_title(f'{obs} Observation')
-    ax.set_title(f'Rewards Graph')
+    ax.set_title('Rewards Graph')
 
 
-def plot_collisions(ax, df, obs):
-    ax.plot(df[0], smooth(df[2], 3000))
-    ax.set_xlabel('Time Steps (thousands)')
+def plot_collisions(ax, df, obs, window_size=15000):
+    ax.plot(df[0], smooth(df[2], window_size))
+    ax.set_xlabel(r'Time Steps ($\times 10^3$)')
     ax.set_ylabel('Collisions')
-    ax.set_title(f'Collisions Graph')
+    ax.set_title('Collisions Graph')
 
 
-def plot_shield_loss_new(ax, df, obs):
-    ax.plot(df[0], smooth(df[1], 20), label=obs)  # 10
-    ax.set_xlabel('Time Steps (thousands)')
+def plot_ep_len(ax, df, obs, window_size=15000):
+    ax.plot(df[0], smooth(df[3], window_size))
+    ax.set_xlabel(r'Time Steps ($\times 10^3$)')
+    ax.set_ylabel('Episode Length')
+    ax.set_title('Episode Length Graph')
+
+
+def plot_shield_loss(ax, df, obs, window_size=150):
+    ax.plot(df[0], smooth(df[1], window_size), label=obs)  # 10
+    ax.set_xlabel(r'Time Steps ($\times 10^3$)')
     ax.set_ylabel('Shield Loss')
-    ax.set_title(f'Shield Loss Graph')
+    ax.set_title('Shield Loss Graph')
 
 
-def plot_runs_old(paths):
-    plots = ["Solo", "Multi", "Multi"]
-    # for folder_path in paths:
-    for folder_path, p in zip(paths, plots):
-        stats = torch.load(f"{folder_path}/stats.log", map_location=torch.device(device))
-        shield_loss_stats_df = torch.load(f"{folder_path}/shield_loss_stats.log", map_location=torch.device(device))
-        # observation = folder_path.split('/')[3].split('_')[0]  # Kinematics or Camera
-
-        observation = p
-        plot_collisions(axs[0], stats, observation)
-        plot_rewards(axs[1], stats, observation)
-        plot_shield_loss_new(axs[2], shield_loss_stats_df, observation)
-    axs[0].legend()
-    axs[1].legend()
-    axs[2].legend()
-    # Save and show the combined plot
-    # plt.savefig(f"models/CartPole_stats/shield_check/all.png")
-    plt.savefig(f"{folder_path}/{observation}.png")
-    plt.show()
+def get_first_ten_percent(stats):
+    threshold = stats[0][-1] * 0.1
+    slice_index = next((i for i, x in enumerate(stats[0]) if x > threshold), len(stats[0]))
+    sliced_data = tuple(lst[:slice_index] for lst in stats)
+    return sliced_data
 
 
-def plot_runs(paths, plots):
+def plot_runs(paths, plots, test_name, close=False):
+    window_size = 2000 if close else 15000
+    window_size_shield = 150 if close else 1500
+
     # for folder_path in paths:
     for folder_path, p in zip(paths, plots):
         print(folder_path)
-        stats = get_stats_from_log_files(folder_path, 'stats')
-        shield_log_stats = get_stats_from_log_files(folder_path, 'shield_loss_stats')
-        # index = 0
-        # for i in range(len(stats[0])):
-        #     if stats[0][i] > 500000:
-        #         index = i
-        # stats = [st[index:] for st in stats]
+        stats = get_stats_from_log_files(folder_path, LOG_FILE_NAME)
+        shield_log_stats = get_stats_from_log_files(folder_path, SHIELD_LOG_FILE_NAME)
         observation = p
-        plot_collisions(axs[0], stats, observation)
-        plot_rewards(axs[1], stats, observation)
-        plot_shield_loss_new(axs[2], shield_log_stats, observation)
+
+        if close:
+            stats = get_first_ten_percent(stats)
+            shield_log_stats = get_first_ten_percent(shield_log_stats)
+
+        plot_collisions(axs[0], stats, observation, window_size)
+        plot_rewards(axs[1], stats, observation, window_size)
+        plot_shield_loss(axs[2], shield_log_stats, observation, window_size_shield)
+        # plot_ep_len(axs[3], stats, observation)
 
     axs[0].legend()
     axs[1].legend()
     axs[2].legend()
+    # axs[3].legend()
 
     # Save and show the combined plot
-    # plt.savefig(f"models/CartPole_stats/shield_check/all.png")
-    plt.savefig(f"{folder_path}/{observation}.png")
+    save_filename = f'{test_name}_close.png' if close else f'{test_name}.png'
+    main_dir = os.path.dirname(os.path.dirname(folder_path))
+    save_path = os.path.join(main_dir, save_filename)
+    plt.savefig(save_path)
     plt.show()
 
 
@@ -108,10 +110,10 @@ def get_stats_from_log_files(folder_path, starts_with):
         with open(file_path, 'r') as f:
             current_stats = tuple(json.load(f))
 
-        if 'shield' not in starts_with:
-            modified_timestep = [value / 1000 for value in current_stats[0]]
-            # Create a new tuple with the modified first list and the other lists unchanged
-            current_stats = (modified_timestep, current_stats[1], current_stats[2], current_stats[3])
+        modified_timestep = [value / 1e3 for value in current_stats[0]]
+
+        # Create a new tuple with the modified first list and the other lists unchanged
+        current_stats = (modified_timestep, *current_stats[1:])
 
         if i == 1:
             stats = stats + current_stats
@@ -150,20 +152,22 @@ def plot_last_runs(stats_type, k=1):
 
 
 def plot_paths(stats_type):
-    folder = "models/{}_stats/{}"
+    folder = "models/{}_stats/0410/{}"
+    subfolder = 'occu3_3_20240922-132538'
+    test_name = "occu_3v1"
     # paths = ["occ3kin2_5_20240615-204126\Occupancy1_CO", "occu1_5_20240615-204026\Occupancy1_CO", "ppo_5_20240615-204509\Occupancy1_CO"]
     # paths = ["0607\occu2kin2_lcl_4_20240706-123333\Kinematics3_CO", "0607\kin1_lcl_4_20240706-123342\Kinematics1_CO", "0707\occu2kin2_lcl_4_20240707-001150\Kinematics3_CO"]
     # paths = ["0607\occu1_lcl_4_20240706-121526\Occupancy1_CO", "0607\occu3_lcl_4_20240706-121526\Occupancy1_CO", "0707\occu3_lcl_4_20240707-001150\Occupancy1_CO", "0707\occu1_lcl_4_20240707-001150\Occupancy1_CO", r"0707\ppo_4_20240706-213348"]
     # paths = ["0707\occu3_lcl_4_20240707-001150\Occupancy1_CO", "0707\occu1_lcl_4_20240707-001150\Occupancy1_CO"]
-    paths = ["0807\occu3_lcl_4_20240708-104824\Occupancy1_CO", r"0807\occu1_lcl_4_20240708-104836\Occupancy1_CO", "0707\ppo_4_20240706-213348", "1207\occu3_lcl_4_20240710-065528\Occupancy1_CO"]
-    paths = ["1207\occu3kin2_lcl_4_20240710-065554\Kinematics4_CO", "1207\kin1_lcl_4_20240710-065606\Kinematics1_CO"]
+    # paths = ["0807\occu3_lcl_4_20240708-104824\Occupancy1_CO", r"0807\occu1_lcl_4_20240708-104836\Occupancy1_CO", "0707\ppo_4_20240706-213348", "1207\occu3_lcl_4_20240710-065528\Occupancy1_CO"]
+    # paths = ["occu3_ppr_3_20240905-183637\Occupancy1_CO", "occu3_ppr_3_20240905-183637\Occupancy2_CO", "occu3_ppr_3_20240905-183637\Occupancy3_CO", "occu1_ppr_3_20240905-183626\Occupancy1_CO"]
+    paths = [f"{subfolder}\Occupancy1_CO", f"{subfolder}\Occupancy2_CO", f"{subfolder}\Occupancy3_CO", "occu1_3_20240922-132538\Occupancy1_CO"]
 
     paths = [folder.format(stats_type, p) for p in paths]
-    # plots = ["0.01"]
-    # plots = ["kinmult", "solo", "kinnew"]
     # plots = ["solo", "trio", "solonew", "trionew", "ppo"]
-    plots = ["oco3", "oco1", "PPO", "oco3new"]
-    plot_runs(paths, plots)
+    plots = ["M1", "M2", "M3", "S1"]
+    # plot_runs(paths, plots, test_name, close=False)
+    plot_runs(paths, plots, test_name, close=True)
 
 
 obs = "Camera"

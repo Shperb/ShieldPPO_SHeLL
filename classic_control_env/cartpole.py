@@ -10,7 +10,7 @@ from gym import spaces, logger
 from gym.utils import seeding
 import numpy as np
 
-import constants
+from utils import constants
 
 
 class CartPoleEnv(gym.Env):

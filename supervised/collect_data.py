@@ -121,8 +121,8 @@ def compute_discounted_cost(episode_len, discount_factor=0.7):
     return discounted
 
 
-def collect_data():
-    env = env_setup("highway-v0", "Kinematics")
+def collect_data(render=False):
+    env = env_setup("highway-v0", highway_obs_type="Kinematics")
 
     data_path = "data/states_actions_cost.pkl"
     data = []
@@ -131,14 +131,15 @@ def collect_data():
     print_freq = 1e3
 
     print(f"Collecting data with {max_steps} time steps")
-    state, _ = env.reset()
-    for global_step in range(1, max_steps + 1):
+    global_step = 1
+    while global_step <= max_steps:
+        state, _ = env.reset()
         ep_traj = []
         ep_t = 0
         done = False
         truncated = False
 
-        while not done and not truncated and global_step < max_steps:
+        while not done and not truncated and global_step <= max_steps:
             if global_step % print_freq == 0:
                 print(f"Collected {global_step} samples")
 

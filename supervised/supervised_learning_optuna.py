@@ -24,31 +24,28 @@ print(f"Using device: {device}")
 
 print("============================================================================================")
 
-# Argument parser
-parser = argparse.ArgumentParser(description='Supervised Learning with Optuna')
-parser.add_argument('--pkl_file_path', type=str, required=True, help='Base path to pkl file')
-parser.add_argument('--base_output_path', type=str, required=True, help='Base path to save the output file')
-parser.add_argument('--n_trials', type=int, required=True, default=50, help='Number of trials for Optuna optimization')
-parser.add_argument("--observation", type=str, default="Kinematics",
-                    choices=["Kinematics", "OccupancyGrid"],
-                    help="Defines the observation type of the highway environment.")
 
-args = parser.parse_args()
-start_time = int(time.time())
-save_output_path = os.path.join(args.base_output_path, f"{args.n_trials}_trials_{start_time}.csv")
-os.makedirs(os.path.dirname(save_output_path), exist_ok=True)
+def parse_arguments():
+    # Argument parser
+    parser = argparse.ArgumentParser(description='Supervised Learning with Optuna')
+    parser.add_argument('--pkl_file_path', type=str, required=True, help='Base path to pkl file')
+    parser.add_argument('--base_output_path', type=str, required=True, help='Base path to save the output file')
+    parser.add_argument('--n_trials', type=int, required=True, default=50,
+                        help='Number of trials for Optuna optimization')
+    parser.add_argument("--observation", type=str, default="Kinematics",
+                        choices=["Kinematics", "OccupancyGrid"],
+                        help="Defines the observation type of the highway environment.")
+    parser.add_argument('--seed', type=int, default=5, required=True, help="Random seed.")
 
-random_seed = 0
+    return parser.parse_args()
 
-torch.manual_seed(random_seed)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(random_seed)
-np.random.seed(random_seed)
-random.seed(random_seed)
 
-with open(args.pkl_file_path, 'rb') as file:
-    all_samples = pickle.load(file)
-    print(f"Successfully loaded 'samples_path' with {len(all_samples)} samples.")
+def set_random_seed(seed=0):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
 
 
 class TrajectoryDataset(Dataset):
@@ -68,14 +65,8 @@ class TrajectoryDataset(Dataset):
         return input_features, cost.float()
 
 
-# Split the merged dataset into training and testing datasets
-train_size = int(0.8 * len(all_samples))
-test_size = len(all_samples) - train_size
-train_dataset, test_dataset = random_split(TrajectoryDataset(all_samples), [train_size, test_size])
-
-
 class Shield(nn.Module):
-    def __init__(self, input_size, num_layers, hidden_dim, activation):
+    def __init__(self, input_size, num_layers, loss_fn, lr, hidden_dim, activation):
         super(Shield, self).__init__()
         layers = [nn.Linear(input_size, hidden_dim)]
         for _ in range(num_layers - 1):
@@ -85,6 +76,9 @@ class Shield(nn.Module):
         # add sigmoid as last layer
         layers.append(nn.Sigmoid())
         self.model = nn.Sequential(*layers)
+
+        self.criterion = loss_fn
+        self.optimizer = optim.Adam(self.parameters(), lr=lr)
 
     def forward(self, x):
         return self.model(x)
@@ -116,15 +110,7 @@ def create_batches(data_list, batch_size):
     return batches
 
 
-if args.highway_observation_type == "OccupancyGrid":
-    input_size = 257
-if args.highway_observation_type == "Kinematics":
-    input_size = 26
-if args.highway_observation_type == "TimeToCollision":
-    input_size = 91
-
-
-def objective(trial):
+def objective(trial, input_size, train_dataset, test_dataset, trial_results, base_output_path):
     start_time = time.time()
     lr_shield = trial.suggest_loguniform('lr_shield', 1e-5, 1e-1)  # Extended range: from 0.00001 to 0.1
     batch_size = trial.suggest_int('batch_size', 100, 10000)  # Extended range: from 100 to 10,000
@@ -134,26 +120,30 @@ def objective(trial):
     hidden_dim = trial.suggest_int('hidden_dim', 16, 512)  # Extended range: from 16 to 512
 
     activation_name = trial.suggest_categorical('activation', ['relu', 'tanh'])
-    # print(f"Starting trial {trial.number} with params: lr_shield={lr_shield}, batch_size={batch_size}, mini_batch_size={mini_batch_size}, num_layers={num_layers}, hidden_dim={hidden_dim}, activation={activation_name}")
+    loss_fun = trial.suggest_categorical('loss_fun', ['MSE', 'BCE'])
+    print(
+        f"Starting trial {trial.number} with params: lr_shield={lr_shield}, batch_size={batch_size}, mini_batch_size={mini_batch_size}, num_layers={num_layers}, hidden_dim={hidden_dim}, activation={activation_name}")
 
     if activation_name == 'relu':
         activation = nn.ReLU()
     else:
         activation = nn.Tanh()
 
-    # determine input size
+    if loss_fun == 'MSE':
+        loss_fun = nn.MSELoss()
+    else:
+        loss_fun = nn.BCELoss()
 
-    shield_model = Shield(input_size=input_size, num_layers=num_layers, hidden_dim=hidden_dim,
-                          activation=activation).to(device)
+    shield_model = Shield(input_size=input_size, num_layers=num_layers, loss_fn=loss_fun,
+                          lr=lr_shield, hidden_dim=hidden_dim, activation=activation).to(device)
 
-    criterion = nn.BCELoss()
-    optimizer = optim.Adam(shield_model.parameters(), lr=lr_shield)
     print("Start to create train and test loaders")
 
     batches = create_batches(train_dataset, batch_size)
     train_loader = DataLoader(train_dataset, batch_size=mini_batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=mini_batch_size, shuffle=False)
     print("Finished creating train and test loaders")
+
     # shield_model.load_model(args.base_output_path)
     for epoch in range(5):
         for train_batch in batches:
@@ -163,12 +153,12 @@ def objective(trial):
             for inputs, targets in train_loader:
                 inputs = inputs.float().to(device)
                 targets = targets.float().view(-1, 1).to(device)
-                optimizer.zero_grad()
+                shield_model.optimizer.zero_grad()
                 outputs = shield_model(inputs)
-                loss = criterion(outputs, targets)
+                loss = shield_model.criterion(outputs, targets)
                 print("Trial: ", trial.number, " Loss: ", loss)
                 loss.backward()
-                optimizer.step()
+                shield_model.optimizer.step()
                 total_loss += loss.item()
     # shield_model.save_model(args.base_output_path)
 
@@ -183,7 +173,7 @@ def objective(trial):
         inputs = inputs.float().to(device)
         targets = targets.float().view(-1, 1).to(device)
         outputs = shield_model(inputs)
-        loss = criterion(outputs, targets)
+        loss = shield_model.criterion(outputs, targets)
         print("Trial: ", trial.number, "Train loss after training: ", loss)
         total_mse += loss.item() * inputs.size(0)
         total_samples += inputs.size(0)
@@ -193,7 +183,7 @@ def objective(trial):
 
     average_mse = total_mse / total_samples
     df = pd.DataFrame(costs_predictions, columns=['cost', 'prediction'])
-    df.to_csv(args.base_output_path + f'/costs_predictions_trial_{trial.number}.csv', index=False)
+    df.to_csv(base_output_path + f'/costs_predictions_trial_{trial.number}.csv', index=False)
 
     end_time = time.time()
     trial_duration = end_time - start_time
@@ -203,26 +193,56 @@ def objective(trial):
         'lr_shield': lr_shield,
         'batch_size': batch_size,
         'mini_batch_size': mini_batch_size,
-        # 'num_layers': num_layers,
-        # 'hidden_dim': hidden_dim,
+        'num_layers': num_layers,
+        'hidden_dim': hidden_dim,
         'activation': activation_name,
         'average_mse': average_mse
     })
-    #    print(f"Finished trial {trial.number} results: lr_shield={lr_shield}, batch_size={batch_size}, mini_batch_size={mini_batch_size}, num_layers={num_layers}, hidden_dim={hidden_dim}, activation={activation_name}, average_mse={average_mse}")
+    print(
+        f"Finished trial {trial.number} results: lr_shield={lr_shield}, batch_size={batch_size}, "
+        f"mini_batch_size={mini_batch_size}, num_layers={num_layers}, hidden_dim={hidden_dim}, "
+        f"activation={activation_name}, average_mse={average_mse}")
 
     return average_mse
 
 
-# List to store trial results
+def main():
+    args = parse_arguments()
+    start_time = int(time.time())
+    save_output_path = os.path.join(args.base_output_path, f"{args.n_trials}_trials_{start_time}.csv")
+    os.makedirs(os.path.dirname(save_output_path), exist_ok=True)
 
-trial_results = []
+    set_random_seed(args.seed)
 
-study = optuna.create_study(direction='minimize')
-study.optimize(objective, n_trials=args.n_trials)
+    with open(args.pkl_file_path, 'rb') as file:
+        all_samples = pickle.load(file)
+        print(f"Successfully loaded 'samples_path' with {len(all_samples)} samples.")
 
-print('Best hyperparameters: ', study.best_params)
-print('Best score for relevant hyperpamaters: ', study.best_value)
+    # Split the merged dataset into training and testing datasets
+    train_size = int(0.8 * len(all_samples))
+    test_size = len(all_samples) - train_size
+    train_dataset, test_dataset = random_split(TrajectoryDataset(all_samples), [train_size, test_size])
 
-# Save trial results to file
-results_df = pd.DataFrame(trial_results)
-results_df.to_csv(save_output_path, index=False)
+    if args.highway_observation_type == "OccupancyGrid":
+        input_size = 257
+    if args.highway_observation_type == "Kinematics":
+        input_size = 26
+    if args.highway_observation_type == "TimeToCollision":
+        input_size = 91
+
+    # List to store trial results
+    trial_results = []
+
+    study = optuna.create_study(direction='minimize')
+    study.optimize(objective, n_trials=args.n_trials)
+
+    print('Best hyperparameters: ', study.best_params)
+    print('Best score for relevant hyperparameters: ', study.best_value)
+
+    # Save trial results to file
+    results_df = pd.DataFrame(trial_results)
+    results_df.to_csv(save_output_path, index=False)
+
+
+if __name__ == '__main__':
+    main()

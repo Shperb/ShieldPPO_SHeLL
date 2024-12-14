@@ -23,6 +23,9 @@ print(f"Using device: {device}")
 print("============================================================================================")
 
 
+BINARY = False
+
+
 def parse_arguments():
     # Argument parser
     parser = argparse.ArgumentParser(description='Supervised Learning with Optuna')
@@ -77,7 +80,6 @@ class TrajectoryDataset(Dataset):
         input_features = torch.cat((state.view(-1), action.view(-1)))
 
         # discounted_cost is already continuous, use as-is
-        # label = torch.tensor(discounted_cost, dtype=torch.float).view(-1, 1)  # shape [1]
         label = torch.tensor(discounted_cost, dtype=torch.float).unsqueeze(0)  # shape [1]
 
         return input_features, label
@@ -150,7 +152,7 @@ def objective(trial, epochs, input_size, train_loader, test_loader, trials_resul
     else:
         activation = nn.Tanh()
 
-    loss_fun = nn.MSELoss()  # change to BCE if predicting non-continuous value
+    loss_fun = nn.MSELoss() if not BINARY else nn.BCELoss()
     shield_model = Shield(input_size=input_size, num_layers=num_layers, loss_fn=loss_fun,
                           lr=lr_shield, hidden_dim=hidden_dim, activation=activation).to(device)
 

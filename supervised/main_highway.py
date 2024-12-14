@@ -8,11 +8,11 @@ import numpy as np
 import pandas as pd
 import os
 import random
-from ppo_shield import Shield
+# from supervised_learning_optuna import Shield
 from gymnasium import spaces, register
 from ppo import PPO
 
-# import highway_env
+import highway_env
 
 
 ################################## set device ##################################
@@ -58,6 +58,77 @@ def get_discounted_costs_episode_samples(episode, discount_factor_cost):
         d_cost_tensor = torch.tensor(d_cost)
         episode_samples.insert(0, (state, action, d_cost_tensor))
     return episode_samples
+
+
+def env_setup(env_name, cp_safe_limit_x, cp_safe_limit_theta, highway_obs_type):
+    if env_name == "CartPoleWithCost-v0":
+        register_env(env_name)
+        env = gym.make(env_name, safe_limit_x=cp_safe_limit_x, safe_limit_theta=cp_safe_limit_theta)
+    elif env_name == "highway-v0" and highway_obs_type == "Kinematics":
+        env = gym.make(env_name)
+        config = {
+            "observation": {
+                "type": "Kinematics",
+                "vehicles_count": 5,  # number of visible vehicles to observation
+                "features": ["presence", "x", "y", "vx", "vy"],  # Essential features only
+                "features_range": {
+                    "x": [-50, 50],
+                    "y": [-50, 50],
+                    "vx": [-10, 10],
+                    "vy": [-10, 10]
+                },
+                "action": {"type": "Discrete"},
+            },
+            "vehicles_count": 10  # total numbers of vehicles in env
+        }
+        for k, v in config.items():
+            config_t = config[k]
+            if type(config_t) == list:
+                for k1, v1 in config_t.items():
+                    env.unwrapped.config[k][k1] = v1
+            else:
+                env.unwrapped.config[k] = v
+        env.reset()
+    elif env_name == "highway-v0" and highway_obs_type == "OccupancyGrid":
+        env = gym.make(env_name)
+        config = {
+            "vehicles_count": 10,  # Total number of vehicles in the environment
+            "observation": {
+                "vehicles_count": 5,
+                "type": "OccupancyGrid",
+                "features": ["x", "y", "vx", "vy"],
+                "features_range": {
+                    "x": [-50, 50],
+                    "y": [-50, 50],
+                    "vx": [-10, 10],
+                    "vy": [-10, 10]
+                },
+                "grid_size": [[-20, 20], [-20, 20]],
+                "grid_step": [5, 5],
+                "absolute": False
+            }
+        }
+        for k, v in config.items():
+            config_t = config[k]
+            if type(config_t) == list:
+                for k1, v1 in config_t.items():
+                    env.unwrapped.config[k][k1] = v1
+            else:
+                env.unwrapped.config[k] = v
+        env.reset()
+    elif env_name == "highway-v0" and highway_obs_type == "TimeToCollision":
+        env = gym.make(env_name)
+        config = {"observation": {"type": "TimeToCollision", "horizon": 10}}
+        for k, v in config.items():
+            config_t = config[k]
+            for k1, v1 in config_t.items():
+                env.unwrapped.config[k][k1] = v1
+        env.reset()
+    else:
+        raise ValueError(
+            f"Unsupported environment: {env_name}. Please choose a valid environment (e.g., 'CartPoleWithCost-v0' or 'highway-v0').")
+
+    return env
 
 
 def train(arguments=None):
@@ -149,7 +220,7 @@ def train(arguments=None):
     # General training arguments
 
     select_action_algo = args.select_action_algo
-    env = args.env
+    env_name = args.env
     max_ep_len = args.max_ep_len
     max_training_timesteps = args.max_training_timesteps
     ## running setups
@@ -191,98 +262,29 @@ def train(arguments=None):
     shield_minimum_buffer_samples = args.shield_minimum_buffer_samples
     shield_sub_batch_size = args.shield_sub_batch_size
 
-    if args.env == "CartPoleWithCost-v0":
-        register_env(args.env)
-        env = gym.make(args.env, safe_limit_x=safe_limit_x, safe_limit_theta=safe_limit_theta)
-    elif args.env == "highway-v0" and args.highway_observation_type == "Kinematics":
-        env = gym.make(args.env)
-        config = {
-            "observation": {
-                "type": "Kinematics",
-                "vehicles_count": 5,  # number of visible vehicles to observaiton
-                "features": ["presence", "x", "y", "vx", "vy"],  # Essential features only
-                "features_range": {
-                    "x": [-50, 50],
-                    "y": [-50, 50],
-                    "vx": [-10, 10],
-                    "vy": [-10, 10]
-                },
-                "action": {"type": "Discrete"},
-            },
-            "vehicles_count": 10  # total numbers of vehicles in env
-        }
-        for k, v in config.items():
-            config_t = config[k]
-            if type(config_t) == list:
-                for k1, v1 in config_t.items():
-                    env.unwrapped.config[k][k1] = v1
-            else:
-                env.unwrapped.config[k] = v
-        env.reset()
-    elif args.env == "highway-v0" and args.highway_observation_type == "OccupancyGrid":
-        env = gym.make(args.env)
-        config = {
-            "vehicles_count": 10,  # Total number of vehicles in the environment
-            "observation": {
-                "vehicles_count": 5,
-                "type": "OccupancyGrid",
-                "features": ["x", "y", "vx", "vy"],
-                "features_range": {
-                    "x": [-50, 50],
-                    "y": [-50, 50],
-                    "vx": [-10, 10],
-                    "vy": [-10, 10]
-                },
-                "grid_size": [[-20, 20], [-20, 20]],
-                "grid_step": [5, 5],
-                "absolute": False
-            }
-        }
-        for k, v in config.items():
-            config_t = config[k]
-            if type(config_t) == list:
-                for k1, v1 in config_t.items():
-                    env.unwrapped.config[k][k1] = v1
-            else:
-                env.unwrapped.config[k] = v
-        env.reset()
-    elif args.env == "highway-v0" and args.highway_observation_type == "TimeToCollision":
-        env = gym.make(args.env)
-        config = {"observation": {"type": "TimeToCollision", "horizon": 10}}
-        for k, v in config.items():
-            config_t = config[k]
-            for k1, v1 in config_t.items():
-                env.unwrapped.config[k][k1] = v1
-        env.reset()
-    else:
-        raise ValueError(
-            f"Unsupported environment: {args.env}. Please choose a valid environment (e.g., 'CartPoleWithCost-v0' or 'highway-v0').")
     # env set up
+    env = env_setup(env_name, safe_limit_x, safe_limit_theta, args.highway_observation_type)
 
     state_dim = np.prod(env.observation_space.shape)
     action_dim = env.action_space.n
     shield_convergence_threshold = args.shield_convergence_threshold
     shield_convergence_episodes_interval = args.shield_convergence_episodes_interval
 
-    base_path = args.base_path + f"/observation_type={config['observation']['type']}"
     # create log paths
+    base_path = args.base_path + args.highway_observation_type
+    os.makedirs(base_path, exist_ok=True)
 
-    if not os.path.exists(base_path):
-        print(f"Given base path directory '{base_path}' did not exist. Creating it.. ")
-        os.makedirs(base_path)
-
-    save_model_path = f"./{base_path}/model.pth"
-    save_shield_path = f"./{base_path}/shield.pth"
-    save_args_path = f"./{base_path}/commandline_args.txt"
-    save_shield_buffer_samples_path = f"./{base_path}/shield_buffer_samples.pkl"
-    save_stats_path = f"./{base_path}/stats.log"
+    # save_model_path = f"./{base_path}/model.pth"
+    # save_shield_path = f"./{base_path}/shield.pth"
+    # save_args_path = f"./{base_path}/commandline_args.txt"
+    # save_shield_buffer_samples_path = f"./{base_path}/shield_buffer_samples.pkl"
+    # save_stats_path = f"./{base_path}/stats.log"
     os.makedirs(base_path + "/Videos", exist_ok=True)
 
     # Define random seed
     random_seed = seed
 
     # save arguments to text file
-
     save_args_path = base_path + "/commandline_args.txt"  # You can customize this path
     with open(save_args_path, 'w') as f:
         for arg in vars(args):
@@ -318,7 +320,6 @@ def train(arguments=None):
     """
 
     # Define agents
-
     if args.env == 'highway-v0' and args.highway_observation_type == "Kinematics":
         # + 1 for concatenated action
         input_size = action_dim * env.unwrapped.config['observation']['vehicles_count'] + 1
@@ -336,10 +337,10 @@ def train(arguments=None):
         input_size = 91
     else:  # cartpole
         input_size = 5
-    shield_net = Shield(input_size=input_size, loss_fn=nn.MSELoss(), lr=shield_lr, k_epochs=shield_K_epochs,
-                        batch_size=shield_batch_size, buffer_size=shield_buffer_size,
-                        sub_batch_size=shield_sub_batch_size).to(device)
-    ppo_agent = PPO(state_dim, action_dim, ppo_lr_actor, ppo_lr_critic, ppo_gamma, ppo_K_epochs, ppo_eps_clip, False)
+
+    # shield_net = Shield(input_size=input_size, num_layers=3, loss_fn=nn.MSELoss(),
+    #                     lr=shield_lr, hidden_dim=64, activation=nn.ReLU()).to(device)
+    # ppo_agent = PPO(state_dim, action_dim, ppo_lr_actor, ppo_lr_critic, ppo_gamma, ppo_K_epochs, ppo_eps_clip, False)
 
     # counters
     time_step = 0
@@ -361,26 +362,25 @@ def train(arguments=None):
         if time_step != 0:
             episodes_len.append((episode_cnt, t + 1))
         shield_episode_trajectory = []
-        # print(f"Starting episode {episode + 1}...")
         state, info = env.reset()
-        done = False
+        # done = False
         ep_cumulative_cost = 0
         for t in range(1, max_ep_len + 1):
-            if t != 1 and time_step % args.save_buffer_pickle_n == 0:
-                batch_samples, _, _ = shield_net.buffer.sample(shield_net.buffer.get_buffer_len())
-                batch_samples_states = torch.stack([sample[0] for sample in batch_samples])
-                batch_samples_actions = torch.stack([sample[1] for sample in batch_samples])
-                batch_samples_costs = torch.stack([sample[2] for sample in batch_samples]).to(device)
-                amount_of_samples = len(batch_samples)
-                buffer_pkl_filename = base_path + "/" + f"amount_of_samples={amount_of_samples}.pickle"
+            # if t != 1 and time_step % args.save_buffer_pickle_n == 0:
+                # batch_samples, _, _ = shield_net.buffer.sample(shield_net.buffer.get_buffer_len())
+                # batch_samples_states = torch.stack([sample[0] for sample in batch_samples])
+                # batch_samples_actions = torch.stack([sample[1] for sample in batch_samples])
+                # batch_samples_costs = torch.stack([sample[2] for sample in batch_samples]).to(device)
+                # amount_of_samples = len(batch_samples)
+                # buffer_pkl_filename = base_path + "/" + f"amount_of_samples={amount_of_samples}.pickle"
 
-                with open(buffer_pkl_filename, "wb") as f:
-                    pickle.dump(batch_samples, f)
-                    print(f"Agent buffer saved to {buffer_pkl_filename} successfully with {len(batch_samples)} samples")
+                # with open(buffer_pkl_filename, "wb") as f:
+                #     pickle.dump(batch_samples, f)
+                #     print(f"Agent buffer saved to {buffer_pkl_filename} successfully with {len(batch_samples)} samples")
 
-            start_time = time.time()
-            if t % shield_update_timestep == 0:
-                loss = shield_net.update()
+            # start_time = time.time()
+            # if t % shield_update_timestep == 0:
+            #     loss = shield_net.update()
             valid_actions = get_valid_actions(env)
             if select_action_algo == "PPO":
                 action = ppo_agent.select_action(state)
@@ -396,7 +396,7 @@ def train(arguments=None):
                 state, reward, done, truncated, info = env.step(action)
                 cost = info['crashed']
             else:  # other envs
-                state, reward, done, info = env.step(action)
+                state, reward, done, _, info = env.step(action)
                 cost = info['cost']
             # add feedback from environment to PPO agent (the rest is added from ppo.select_action method
 
@@ -410,8 +410,8 @@ def train(arguments=None):
                     [ppo_update_log, pd.DataFrame({'update_timestep': [time_step], 'loss': [ppo_loss]})],
                     ignore_index=True)
 
-            shield_episode_trajectory.append((torch.tensor(prev_state), torch.tensor([action]), cost, done))
             # Log the cost and reward at this time step
+            shield_episode_trajectory.append((torch.tensor(prev_state), torch.tensor([action]), cost, done))
 
             ep_cumulative_cost += cost
             reward_log.append((time_step, reward))  # Store (time_step, reward)
@@ -442,13 +442,13 @@ def train(arguments=None):
             actions_ten = torch.squeeze(torch.stack(actions_, dim=0)).detach().unsqueeze(1).to(device)
             x = torch.cat([states_ten, actions_ten], -1).to(device)
             x = x.float()
-        predictions = shield_net(x).squeeze()
-        episode_errors = torch.abs(predictions - costs_ten).cpu().data.numpy()
-
-        for i, sample in enumerate(episode_samples):
-            state, action, cost = sample
-            sample_error = episode_errors[i]
-            shield_net.add_to_buffer(torch.tensor(sample_error), sample)
+        # predictions = shield_net(x).squeeze()
+        # episode_errors = torch.abs(predictions - costs_ten).cpu().data.numpy()
+        #
+        # for i, sample in enumerate(episode_samples):
+        #     state, action, cost = sample
+        #     sample_error = episode_errors[i]
+        #     shield_net.add_to_buffer(torch.tensor(sample_error), sample)
 
         # print(f"Finished episode {episode} after {episode_len} time steps")
         """
@@ -467,32 +467,32 @@ def train(arguments=None):
             cost_df = pd.DataFrame(costs_per_episode, columns=['Episode', 'Cumulative Cost'])
             episodes_len_df = pd.DataFrame(episodes_len, columns=['Episode', 'Episode Length'])
             rewards_df = pd.DataFrame(reward_log, columns=['Time Step', 'Reward'])
-            shield_losses_df = pd.DataFrame(shield_loss_log, columns=['Update Time Step', 'Loss'])
+            # shield_losses_df = pd.DataFrame(shield_loss_log, columns=['Update Time Step', 'Loss'])
 
             # save DataFrames to CSV files
             costs_csv_path = base_path + "/costs_log.csv"
             rewards_csv_path = base_path + "/rewards_log.csv"
-            losses_csv_path = base_path + "/shield_losses_updates.csv"
+            # losses_csv_path = base_path + "/shield_losses_updates.csv"
             episodes_len_path = base_path + "/episodes_len.csv"
 
             cost_df.to_csv(costs_csv_path, index=False)
             rewards_df.to_csv(rewards_csv_path, index=False)
-            shield_losses_df.to_csv(losses_csv_path, index=False)
+            # shield_losses_df.to_csv(losses_csv_path, index=False)
             episodes_len_df.to_csv(episodes_len_path, index=False)
 
     if select_action_algo == 'PPO':
         # save ppo loss
         ppo_update_log.to_csv(f"{base_path}/ppo_update_log.csv", index=False)
     # save pickle in the end
-    batch_samples, _, _ = shield_net.buffer.sample(shield_net.buffer.get_buffer_len())
-    batch_samples_states = torch.stack([sample[0] for sample in batch_samples])
-    batch_samples_actions = torch.stack([sample[1] for sample in batch_samples])
-    batch_samples_costs = torch.stack([sample[2] for sample in batch_samples]).to(device)
-    amount_of_samples = len(batch_samples)
-    buffer_pkl_filename = base_path + "/" + f"amount_of_samples={amount_of_samples}.pickle"
-    with open(buffer_pkl_filename, "wb") as f:
-        pickle.dump(batch_samples, f)
-        print(f"Agent buffer saved to {buffer_pkl_filename} successfully with {len(batch_samples)} samples")
+    # batch_samples, _, _ = shield_net.buffer.sample(shield_net.buffer.get_buffer_len())
+    # batch_samples_states = torch.stack([sample[0] for sample in batch_samples])
+    # batch_samples_actions = torch.stack([sample[1] for sample in batch_samples])
+    # batch_samples_costs = torch.stack([sample[2] for sample in batch_samples]).to(device)
+    # amount_of_samples = len(batch_samples)
+    # buffer_pkl_filename = base_path + "/" + f"amount_of_samples={amount_of_samples}.pickle"
+    # with open(buffer_pkl_filename, "wb") as f:
+    #     pickle.dump(batch_samples, f)
+    #     print(f"Agent buffer saved to {buffer_pkl_filename} successfully with {len(batch_samples)} samples")
 
     # shield_losses_df = pd.DataFrame(shield_loss_log, columns=['Update Time Step', 'Loss'])
     # shield_losses_df.to_csv(losses_csv_path, index=False)

@@ -2,6 +2,7 @@ import pickle
 import torch
 import gymnasium as gym
 from gymnasium import spaces, register
+import utils.env_configurations as envs_config
 import highway_env
 
 ################################## set device ##################################
@@ -36,70 +37,27 @@ def env_setup(env_name, cp_safe_limit_x=None, cp_safe_limit_theta=None, highway_
     if env_name == "CartPoleWithCost-v0":
         register_env(env_name)
         env = gym.make(env_name, safe_limit_x=cp_safe_limit_x, safe_limit_theta=cp_safe_limit_theta)
-    elif env_name == "highway-v0" and highway_obs_type == "Kinematics":
+    elif env_name == "highway-fast-v0":
         env = gym.make(env_name)
-        config = {
-            "observation": {
-                "type": "Kinematics",
-                "vehicles_count": 5,  # number of visible vehicles to observation
-                "features": ["presence", "x", "y", "vx", "vy"],  # Essential features only
-                "features_range": {
-                    "x": [-50, 50],
-                    "y": [-50, 50],
-                    "vx": [-10, 10],
-                    "vy": [-10, 10]
-                },
-                "action": {"type": "Discrete"},
-            },
-            "vehicles_count": 10  # total numbers of vehicles in env
-        }
-        for k, v in config.items():
-            config_t = config[k]
-            if type(config_t) == list:
-                for k1, v1 in config_t.items():
-                    env.unwrapped.config[k][k1] = v1
-            else:
-                env.unwrapped.config[k] = v
-        env.reset()
-    elif env_name == "highway-v0" and highway_obs_type == "OccupancyGrid":
-        env = gym.make(env_name)
-        config = {
-            "vehicles_count": 10,  # Total number of vehicles in the environment
-            "observation": {
-                "vehicles_count": 5,
-                "type": "OccupancyGrid",
-                "features": ["x", "y", "vx", "vy"],
-                "features_range": {
-                    "x": [-50, 50],
-                    "y": [-50, 50],
-                    "vx": [-10, 10],
-                    "vy": [-10, 10]
-                },
-                "grid_size": [[-20, 20], [-20, 20]],
-                "grid_step": [5, 5],
-                "absolute": False
-            }
-        }
-        for k, v in config.items():
-            config_t = config[k]
-            if type(config_t) == list:
-                for k1, v1 in config_t.items():
-                    env.unwrapped.config[k][k1] = v1
-            else:
-                env.unwrapped.config[k] = v
-        env.reset()
-    elif env_name == "highway-v0" and highway_obs_type == "TimeToCollision":
-        env = gym.make(env_name)
-        config = {"observation": {"type": "TimeToCollision", "horizon": 10}}
-        for k, v in config.items():
-            config_t = config[k]
-            for k1, v1 in config_t.items():
-                env.unwrapped.config[k][k1] = v1
-        env.reset()
+        if highway_obs_type == "Kinematics":
+            config = envs_config.kinematics_config
+        elif highway_obs_type == "OccupancyGrid":
+            config = envs_config.occupancy_config
+        elif highway_obs_type == "TimeToCollision":
+            config = envs_config.ttc_config
+        else:
+            raise ValueError("Unsupported observation for highway-fast-v0:  Please choose a valid observation.")
+
+        cfg = env.unwrapped.default_config()
+        cfg.update(config)
+        env.unwrapped.config = cfg
     else:
         raise ValueError(
-            f"Unsupported environment: {env_name}. Please choose a valid environment (e.g., 'CartPoleWithCost-v0' or 'highway-v0').")
+            f"Unsupported environment: {env_name}. Please choose a valid environment "
+            f"(e.g., 'CartPoleWithCost-v0' or 'highway-fast-v0')."
+        )
 
+    env.reset()
     return env
 
 
@@ -122,7 +80,7 @@ def compute_discounted_cost(episode_len, discount_factor=0.7):
 
 
 def collect_data(render=False):
-    env = env_setup("highway-v0", highway_obs_type="Kinematics")
+    env = env_setup("highway-fast-v0", highway_obs_type="Kinematics")
 
     data_path = "data/states_actions_cost.pkl"
     data = []
